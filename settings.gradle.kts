@@ -23,7 +23,7 @@ dependencyResolutionManagement {
 rootProject.name="telephoto"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
-include(":benchmark:runner")
+//include(":benchmark:runner")
 include(":flick")
 include(":zoomable")
 include(":zoomable-image:core")
