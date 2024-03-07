@@ -106,6 +106,11 @@ sealed interface ZoomableState {
   @get:FloatRange(from = 0.0, to = 1.0)
   val zoomFraction: Float?
 
+  /**
+   * Whether the content can be panned, individually from translation while zooming.
+   */
+  var enablePan: Boolean
+
   /** See [ZoomableContentLocation]. */
   suspend fun setContentLocation(location: ZoomableContentLocation)
 

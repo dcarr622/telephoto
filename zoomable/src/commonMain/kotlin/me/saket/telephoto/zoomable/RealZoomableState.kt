@@ -121,6 +121,8 @@ internal class RealZoomableState internal constructor(
     }
   }
 
+  override var enablePan: Boolean by mutableStateOf(true)
+
   internal var gestureState: GestureState? by mutableStateOf(initialGestureState)
 
   internal var zoomSpec by mutableStateOf(ZoomSpec())
@@ -265,7 +267,7 @@ internal class RealZoomableState internal constructor(
   }
 
   internal fun canConsumePanChange(panDelta: Offset): Boolean {
-    if (!zoomSpec.enablePan) {
+    if (!enablePan) {
       return false
     }
     val baseZoomFactor = baseZoomFactor ?: return false // Content is probably not ready yet. Ignore this gesture.
