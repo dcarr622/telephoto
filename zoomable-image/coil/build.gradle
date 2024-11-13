@@ -1,6 +1,6 @@
 plugins {
   id("me.saket.android.library")
-  id("me.saket.android.library.publishing")
+  id("me.saket.library.publishing")
   id("me.saket.kotlin.android")
   id("me.saket.compose")
   id("me.saket.android.test")
@@ -25,4 +25,5 @@ dependencies {
   androidTestImplementation(libs.coil.svg)
   androidTestImplementation(libs.coil.test)
   androidTestImplementation(libs.okio.fakeFileSystem)
+  androidTestImplementation(libs.modernstorage)
 }

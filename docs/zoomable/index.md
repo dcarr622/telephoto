@@ -3,11 +3,12 @@
 A `Modifier` for handling pan & zoom gestures, designed to be shared across all your media composables so that your users can use the same familiar gestures throughout your app. It offers,
 
 - Pinch to zoom and flings
-- Double tap to zoom
-- Single finger zoom (double tap and hold)
+- Double click to zoom
+- Single finger zoom (double click and hold)
 - Haptic feedback for over/under zoom
 - Compatibility with nested scrolling
 - Click listeners
+- [Keyboard and mouse shortcuts](#keyboard-shortcuts)
 
 ### Installation
 
@@ -63,13 +64,22 @@ Image(
 ```
 
 ### Click listeners
-For detecting double taps, `Modifier.zoomable()` consumes all tap gestures making it incompatible with `Modifier.clickable()` and `Modifier.combinedClickable()`. As an alternative, its `onClick` and `onLongClick` parameters can be used.
+For detecting double clicks, `Modifier.zoomable()` consumes all tap gestures making it incompatible with `Modifier.clickable()` and `Modifier.combinedClickable()`. As an alternative, its `onClick` and `onLongClick` parameters can be used.
 
-```kotlin
+```kotlin hl_lines="3-4"
 Modifier.zoomable(
   state = rememberZoomableState(),
   onClick = { … },
   onLongClick = { … },
+)
+```
+
+The default behavior of toggling between minimum and maximum zoom levels on double-clicks can be overridden by using
+the `onDoubleClick` parameter:
+
+```kotlin
+Modifier.zoomable(
+  onDoubleClick = { state, centroid -> … },
 )
 ```
 
@@ -98,3 +108,35 @@ Text(
   }
 )
 ```
+
+### Keyboard shortcuts
+
+`ZoomableImage()` can observe keyboard and mouse shortcuts for panning and zooming when it is focused, either by the
+user or using a `FocusRequester`:
+
+```kotlin hl_lines="6 11"
+val focusRequester = remember { FocusRequester() }
+LaunchedEffect(Unit) {
+  // Automatically request focus when the image is displayed. This assumes there 
+  // is only one zoomable image present in the hierarchy. If you're displaying 
+  // multiple images in a pager, apply this only for the active page.  
+  focusRequester.requestFocus()
+}
+
+Box(
+  Modifier
+    .focusRequester(focusRequester)
+    .zoomable(),
+)
+```
+
+By default, the following shortcuts are recognized. These can be customized (or disabled) by passing a
+custom `HardwareShortcutsSpec` to `rememberZoomableState()`.
+
+|           | Android            | Desktop               |
+|-----------|--------------------|-----------------------|
+| Zoom in   | `Control` + `=`    | `Meta` + `=`          |
+| Zoom out  | `Control` + `-`    | `Meta` + `-`          |
+| Pan       | Arrow keys         | Arrow keys            |
+| Extra pan | `Alt` + arrow keys | `Option` + arrow keys |
+

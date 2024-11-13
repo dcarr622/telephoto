@@ -3,17 +3,15 @@ package me.saket.telephoto.subsamplingimage.internal
 import android.graphics.BitmapFactory
 import android.graphics.BitmapRegionDecoder
 import android.os.Build
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.toAndroidColorSpace
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.toAndroidRect
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.tracing.trace
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.ExecutorCoroutineDispatcher
-import kotlinx.coroutines.newSingleThreadContext
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.withContext
 import me.saket.telephoto.subsamplingimage.ImageBitmapOptions
 import me.saket.telephoto.subsamplingimage.SubSamplingImageSource
@@ -26,18 +24,17 @@ internal class AndroidImageRegionDecoder private constructor(
   private val imageOptions: ImageBitmapOptions,
   private val decoder: BitmapRegionDecoder,
   private val exif: ExifMetadata,
-  private val dispatcher: ExecutorCoroutineDispatcher,
+  private val dispatcher: CoroutineDispatcher,
 ) : ImageRegionDecoder {
 
-  override val imageSize: IntSize = decoder.size()
-  override val imageOrientation: ImageOrientation get() = exif.orientation
+  override val imageSize: IntSize get() = decoder.size()
 
-  override suspend fun decodeRegion(region: BitmapRegionTile): ImageBitmap {
+  override suspend fun decodeRegion(region: ImageRegionTile): Painter {
     val options = BitmapFactory.Options().apply {
       inSampleSize = region.sampleSize.size
       inPreferredConfig = imageOptions.config.toAndroidConfig()
       if (Build.VERSION.SDK_INT >= 26) {
-        inPreferredColorSpace = imageOptions.colorSpace?.toAndroidColorSpace()
+        inPreferredColorSpace = imageOptions.androidColorSpace
       }
     }
 
@@ -47,26 +44,31 @@ internal class AndroidImageRegionDecoder private constructor(
       // already in the correct orientation. To counter this, rotate the bounds in
       // anticlockwise direction to get the bounds in the original non-rotated image.
       degrees = -exif.orientation.degrees,
-      unRotatedParent = IntRect(offset = IntOffset.Zero, size = decoder.size())
+      unRotatedParent = IntRect(offset = IntOffset.Zero, size = imageSize)
     )
 
     val bitmap = withContext(dispatcher) {
       trace("decodeRegion") {
-        decoder.decodeRegion(bounds.toAndroidRect(), options)?.asImageBitmap()
+        decoder.decodeRegion(bounds.toAndroidRect(), options)
       }
     }
-    return checkNotNull(bitmap) {
-      "BitmapRegionDecoder returned a null bitmap. Image format may not be supported: $imageSource."
+    if (bitmap != null) {
+      return RotatedBitmapPainter(
+        image = bitmap,
+        orientation = exif.orientation,
+      )
+    } else {
+      error("BitmapRegionDecoder returned a null bitmap. Image format may not be supported: $imageSource.")
     }
   }
 
-  override fun recycle() {
-    // FYI BitmapRegionDecoder's documentation says explicit recycling is not needed,
-    // but that is a lie. Instrumentation tests for SubSamplingImage() on API 31 run into
-    // low memory because the native state of decoders aren't cleared after each test,
-    // causing Android to panic and kill all processes (including the test).
-    decoder.recycle()
-    dispatcher.close()
+  override fun close() {
+    // Previous versions of telephoto recycled the dispatcher as well, but this was later removed
+    // after discovering that close() and decodeRegion() could be called from different threads,
+    // potentially causing a race condition. If a zoomable image is disposed while it was still
+    // decoding regions, the underlying decoder will remain in memory for a bit longer until GC
+    // kicks in. I think that is okay as its memory usage would be similar to displaying multiple
+    // _active_ images in a pager, each allocating a decoder.
   }
 
   private fun BitmapRegionDecoder.size(): IntSize {
@@ -83,9 +85,9 @@ internal class AndroidImageRegionDecoder private constructor(
   }
 
   companion object {
-    @OptIn(DelicateCoroutinesApi::class)
+    @OptIn(ExperimentalCoroutinesApi::class)
     val Factory = ImageRegionDecoder.Factory { params ->
-      val dispatcher = newSingleThreadContext("AndroidImageRegionDecoder")
+      val dispatcher = Dispatchers.IO.limitedParallelism(1)
 
       AndroidImageRegionDecoder(
         imageSource = params.imageSource,

@@ -1,12 +1,12 @@
 plugins {
   id("me.saket.android.library")
-  id("me.saket.android.library.publishing")
+  id("me.saket.library.publishing")
   id("me.saket.kotlin.android")
   id("me.saket.compose")
   id("me.saket.android.test")
+  alias(libs.plugins.kotlin.parcelize)
+  alias(libs.plugins.paparazzi)
 }
-
-apply plugin: 'app.cash.paparazzi'
 
 android {
   namespace "me.saket.telephoto.subsamplingimage"
@@ -24,12 +24,14 @@ dependencies {
   implementation(libs.androidx.ktx.core)
   implementation(libs.androidx.exif)
   implementation(libs.androidx.tracing)
+  implementation(libs.kotlinx.immutableCollections)
 
   testImplementation(libs.junit)
   testImplementation(libs.assertk)
   testImplementation(libs.testParamInjector)
   testImplementation(libs.kotlinx.coroutines.test)
   testImplementation(libs.turbine)
+  testImplementation(libs.robolectric)
 
   androidTestImplementation(projects.testUtil)
 }

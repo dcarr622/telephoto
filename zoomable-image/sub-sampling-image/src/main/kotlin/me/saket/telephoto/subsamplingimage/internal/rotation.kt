@@ -3,6 +3,8 @@
 package me.saket.telephoto.subsamplingimage.internal
 
 import android.graphics.Matrix
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -14,8 +16,12 @@ import kotlin.LazyThreadSafetyMode.NONE
  * after its parent is rotated clockwise by [degrees].
  */
 internal fun IntRect.rotateBy(degrees: Int, unRotatedParent: IntRect): IntRect {
-  // There is probably a better way to find the rectangle after rotation,
-  // but I'm brute forcing my way through this by manually mapping points.
+  if (degrees == 0) {
+    return this
+  }
+
+  // There is probably a better (and simpler) way to find the rectangle after
+  // rotation, but I'm brute forcing my way through this by manually mapping points.
   val newTopLeft = when (degrees) {
     -270, 90 -> {
       val offsetFromBottomLeft = unRotatedParent.bottomLeft - bottomLeft
@@ -53,110 +59,64 @@ internal fun IntRect.rotateBy(degrees: Int, unRotatedParent: IntRect): IntRect {
   )
 }
 
-private fun IntOffset.flip(): IntOffset = IntOffset(x = y, y = x)
-
-private fun IntSize.flip(): IntSize = IntSize(width = height, height = width)
-
-private val sourceCoordinates = FloatArray(8)
-private val destinationCoordinates = FloatArray(8)
+// The same instance is shared by all calls to createRotationMatrix()
+// because it's always called on the same (main) thread.
 private val matrix by lazy(NONE) { Matrix() }
 
 /**
  * Creates a [Matrix] that can be used for drawing this tile's rotated bitmap such that
  * it appears straight on the canvas.
  *
- * Voodoo code copied from https://github.com/davemorrissey/subsampling-scale-image-view.
- * I don't fully understand how the matrix is created, but it works.
+ * Code adapted from [subsampling-scale-image-view](https://github.com/davemorrissey/subsampling-scale-image-view).
  */
-internal inline fun CanvasRegionTile.createRotationMatrix(): Matrix {
-  val bitmap = checkNotNull(bitmap)
+internal inline fun createRotationMatrix(
+  bitmapSize: Size,
+  orientation: ImageOrientation,
+  bounds: Size,
+): Matrix {
   matrix.reset()
-  sourceCoordinates.set(
-    0,
-    0,
-    bitmap.width,
-    0,
-    bitmap.width,
-    bitmap.height,
-    0,
-    bitmap.height,
-  )
-  when (orientation) {
-    ImageOrientation.None -> {
-      destinationCoordinates.set(
-        bounds.left,
-        bounds.top,
-        bounds.right,
-        bounds.top,
-        bounds.right,
-        bounds.bottom,
-        bounds.left,
-        bounds.bottom,
-      )
-    }
-    ImageOrientation.Orientation90 -> {
-      destinationCoordinates.set(
-        bounds.right,
-        bounds.top,
-        bounds.right,
-        bounds.bottom,
-        bounds.left,
-        bounds.bottom,
-        bounds.left,
-        bounds.top,
-      )
-    }
-    ImageOrientation.Orientation180 -> {
-      destinationCoordinates.set(
-        bounds.right,
-        bounds.bottom,
-        bounds.left,
-        bounds.bottom,
-        bounds.left,
-        bounds.top,
-        bounds.right,
-        bounds.top,
-      )
-    }
-    ImageOrientation.Orientation270 -> {
-      destinationCoordinates.set(
-        bounds.left,
-        bounds.bottom,
-        bounds.left,
-        bounds.top,
-        bounds.right,
-        bounds.top,
-        bounds.right,
-        bounds.bottom,
-      )
-    }
+
+  val rotationDegrees = when (orientation) {
+    ImageOrientation.None -> 0f
+    ImageOrientation.Orientation90 -> 90f
+    ImageOrientation.Orientation180 -> 180f
+    ImageOrientation.Orientation270 -> 270f
   }
-  matrix.setPolyToPoly(
-    /* src = */ sourceCoordinates,
-    /* srcIndex = */ 0,
-    /* dst = */ destinationCoordinates,
-    /* dstIndex = */ 0,
-    /* pointCount = */ 4
+
+  // Calculate points for rotation around the image's center.
+  val bitmapCenter = Offset(
+    x = bitmapSize.width / 2f,
+    y = bitmapSize.height / 2f,
   )
+
+  // Post* matrix operations happen in reverse order, so reading bottom to top:
+  // 1. Translate to the center of the destination bounds
+  // 2. Scale to fill bounds
+  // 3. Rotate by required degrees
+  // 4. Translate to origin for centering
+  matrix.postTranslate(-bitmapCenter.x, -bitmapCenter.y)        // 4.
+  matrix.postRotate(rotationDegrees)                            // 3.
+
+  // Calculate scale to fill bounds completely (based on rotated dimensions).
+  // This scale happens from (0,0). This ensures a uniform scaling before any
+  // translations that could affect the scale ratios.
+  val rotatedSize = if (rotationDegrees % 180 == 0f) bitmapSize else bitmapSize.flip()
+  matrix.postScale(                                             // 2.
+    bounds.width / rotatedSize.width,
+    bounds.height / rotatedSize.height
+  )
+
+  val left = 0f
+  val top = 0f
+  matrix.postTranslate(
+    // 1.
+    (left + bounds.width) / 2f,
+    (top + bounds.height) / 2f,
+  )
+
   return matrix
 }
 
-private inline fun FloatArray.set(
-  f0: Int,
-  f1: Int,
-  f2: Int,
-  f3: Int,
-  f4: Int,
-  f5: Int,
-  f6: Int,
-  f7: Int,
-) {
-  this[0] = f0.toFloat()
-  this[1] = f1.toFloat()
-  this[2] = f2.toFloat()
-  this[3] = f3.toFloat()
-  this[4] = f4.toFloat()
-  this[5] = f5.toFloat()
-  this[6] = f6.toFloat()
-  this[7] = f7.toFloat()
-}
+private fun IntOffset.flip(): IntOffset = IntOffset(x = y, y = x)
+private fun IntSize.flip(): IntSize = IntSize(width = height, height = width)
+private fun Size.flip(): Size = Size(width = height, height = width)

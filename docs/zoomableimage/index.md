@@ -8,11 +8,12 @@ A _drop-in_ replacement for async `Image()` composables featuring support for pa
 
 - [Sub-sampling](sub-sampling.md) of bitmaps
 - Pinch to zoom and flings
-- Double tap to zoom
-- Single finger zoom (double tap and hold)
+- Double click to zoom
+- Single finger zoom (double click and hold)
 - Haptic feedback for over/under zoom
 - Compatibility with nested scrolling
 - Click listeners
+- [Keyboard and mouse shortcuts](#keyboard-shortcuts)
 
 ### Installation
 
@@ -52,12 +53,8 @@ For complex scenarios, `ZoomableImage` can also take full image requests:
       model = ImageRequest.Builder(LocalContext.current)
         .data("https://example.com/image.jpg")
         .listener(
-          remember {
-            object : ImageRequest.Listener {
-              override fun onSuccess(…) {}
-              override fun onError(…) {}
-            }
-          }    
+          onSuccess = { … },
+          onError = { … },
         )
         .crossfade(1_000)
         .memoryCachePolicy(CachePolicy.DISABLED)
@@ -119,6 +116,9 @@ When combined with a cross-fade transition, `ZoomableImage` will smoothly swap o
     ```
     More details about `thumbnail()` can be found on [Glide's website](https://bumptech.github.io/glide/doc/options.html#thumbnail-requests).
 
+!!! Warning
+    Placeholders are visually incompatible with `Modifier.wrapContentSize()`.
+
 ### Content alignment
 
 | ![type:video](../assets/alignment_top_small.mp4) | ![type:video](../assets/alignment_bottom_small.mp4) |
@@ -175,10 +175,10 @@ Unlike `Image()`, `ZoomableImage` can pan images even when they're cropped. This
     Placeholders are visually incompatible with `ContentScale.Inside`.
 
 ### Click listeners
-For detecting double taps, `ZoomableImage` consumes all tap gestures making it incompatible with `Modifier.clickable()` and `Modifier.combinedClickable()`. As an alternative, its `onClick` and `onLongClick` parameters can be used.
+For detecting double clicks, `ZoomableImage` consumes all tap gestures making it incompatible with `Modifier.clickable()` and `Modifier.combinedClickable()`. As an alternative, its `onClick` and `onLongClick` parameters can be used.
 
 === "Coil"
-    ```kotlin
+    ```kotlin hl_lines="4-5"
     ZoomableAsyncImage(
       modifier = Modifier.clickable { error("This will not work") },
       model = "https://example.com/image.jpg",
@@ -187,7 +187,7 @@ For detecting double taps, `ZoomableImage` consumes all tap gestures making it i
     )
     ```
 === "Glide"
-    ```kotlin
+    ```kotlin hl_lines="4-5"
     ZoomableGlideImage(
       modifier = Modifier.clickable { error("This will not work") },
       model = "https://example.com/image.jpg",
@@ -196,6 +196,60 @@ For detecting double taps, `ZoomableImage` consumes all tap gestures making it i
     )
     ```
 
+The default behavior of toggling between minimum and maximum zoom levels on double-clicks can be overridden by using the `onDoubleClick` parameter:
+
+=== "Coil" hl_lines="3"
+    ```kotlin
+    ZoomableAsyncImage(
+      model = "https://example.com/image.jpg",
+      onDoubleClick = { state, centroid -> … },
+    )
+    ```
+=== "Glide"
+    ```kotlin hl_lines="3"
+    ZoomableGlideImage(
+      model = "https://example.com/image.jpg",
+      onDoubleClick = { state, centroid -> … },
+    )
+    ```
+
+### Keyboard shortcuts
+
+`ZoomableImage()` can observe keyboard and mouse shortcuts for panning and zooming when it is focused, either by the user or using a `FocusRequester`:
+
+```kotlin hl_lines="6"
+val focusRequester = remember { FocusRequester() }
+LaunchedEffect(Unit) {
+  // Automatically request focus when the image is displayed. This assumes there 
+  // is only one zoomable image present in the hierarchy. If you're displaying 
+  // multiple images in a pager, apply this only for the active page.  
+  focusRequester.requestFocus()
+}
+```
+
+=== "Coil"
+    ```kotlin hl_lines="2"
+    ZoomableAsyncImage(
+      modifier = Modifier.focusRequester(focusRequester),
+      model = "https://example.com/image.jpg",
+    )
+    ```
+=== "Glide"
+    ```kotlin hl_lines="2"
+    ZoomableGlideImage(
+      modifier = Modifier.focusRequester(focusRequester),
+      model = "https://example.com/image.jpg",
+    )
+    ```
+
+By default, the following shortcuts are recognized. These can be customized (or disabled) by passing a custom `HardwareShortcutsSpec` to `rememberZoomableState()`.
+
+|           | Android            |
+|-----------|--------------------|
+| Zoom in   | `Control` + `=`    |
+| Zoom out  | `Control` + `-`    |
+| Pan       | Arrow keys         |
+| Extra pan | `Alt` + arrow keys |
 
 ### Sharing hoisted state
 

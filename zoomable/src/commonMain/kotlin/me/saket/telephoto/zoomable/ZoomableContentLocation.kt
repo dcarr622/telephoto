@@ -1,3 +1,5 @@
+@file:Suppress("DeprecatedCallableAddReplaceWith")
+
 package me.saket.telephoto.zoomable
 
 import androidx.compose.runtime.Immutable
@@ -10,9 +12,11 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.isUnspecified
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.ScaleFactor
 import androidx.compose.ui.layout.times
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.toOffset
+import me.saket.telephoto.zoomable.internal.Zero
 import me.saket.telephoto.zoomable.internal.discardFractionalParts
 
 /**
@@ -106,23 +110,26 @@ interface ZoomableContentLocation {
    * isn't calculated yet. The content will stay hidden until this is replaced.
    */
   data object Unspecified : ZoomableContentLocation {
-    override fun size(layoutSize: Size) = Size.Unspecified
-    override fun location(layoutSize: Size, direction: LayoutDirection) = throw UnsupportedOperationException()
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun size(layoutSize: Size): Size = Size.Unspecified
+    override fun location(layoutSize: Size, direction: LayoutDirection): Rect = throw UnsupportedOperationException()
   }
 
   /**
    * The default value of [ZoomableContentLocation], intended to be used for content that
-   * fills every pixel of its layout size.
+   * fills every pixel of its viewport size.
    *
    * For richer content such as images whose visual size may not always match its layout
    * size, you should provide a different value using [ZoomableState.setContentLocation].
    */
   data object SameAsLayoutBounds : ZoomableContentLocation {
+    @Suppress("OVERRIDE_DEPRECATION")
     override fun size(layoutSize: Size): Size = layoutSize
     override fun location(layoutSize: Size, direction: LayoutDirection) = Rect(Offset.Zero, layoutSize)
   }
 
-  fun size(layoutSize: Size): Size
+  @Deprecated("No longer used")
+  fun size(layoutSize: Size): Size = Size.Unspecified
 
   fun location(layoutSize: Size, direction: LayoutDirection): Rect
 }
@@ -137,16 +144,25 @@ internal data class RelativeContentLocation(
   private val scale: ContentScale,
   private val alignment: Alignment,
 ) : ZoomableContentLocation {
-  override fun size(layoutSize: Size): Size = size
+
+  @Deprecated("No longer used")
+  override fun size(layoutSize: Size): Size {
+    val scaleFactor = if (size.isEmpty()) {
+      ScaleFactor.Zero
+    } else {
+      scale.computeScaleFactor(
+        srcSize = size,
+        dstSize = layoutSize,
+      )
+    }
+    return size * scaleFactor
+  }
 
   override fun location(layoutSize: Size, direction: LayoutDirection): Rect {
     check(!layoutSize.isEmpty()) { "Layout size is empty" }
 
-    val scaleFactor = scale.computeScaleFactor(
-      srcSize = size,
-      dstSize = layoutSize,
-    )
-    val scaledSize = size * scaleFactor
+    @Suppress("DEPRECATION")
+    val scaledSize = size(layoutSize)
     val alignedOffset = alignment.align(
       size = scaledSize.discardFractionalParts(),
       space = layoutSize.discardFractionalParts(),
@@ -154,7 +170,7 @@ internal data class RelativeContentLocation(
     )
     return Rect(
       offset = alignedOffset.toOffset(),
-      size = scaledSize
+      size = scaledSize,
     )
   }
 }

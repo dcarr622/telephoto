@@ -1,8 +1,10 @@
 package me.saket.telephoto.subsamplingimage.internal
 
+import android.annotation.SuppressLint
 import android.content.Context
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.unit.IntSize
 import me.saket.telephoto.subsamplingimage.ImageBitmapOptions
 import me.saket.telephoto.subsamplingimage.SubSamplingImageSource
@@ -14,11 +16,10 @@ import me.saket.telephoto.subsamplingimage.SubSamplingImageSource
  */
 internal interface ImageRegionDecoder {
   val imageSize: IntSize
-  val imageOrientation: ExifMetadata.ImageOrientation
 
-  suspend fun decodeRegion(region: BitmapRegionTile): ImageBitmap
+  suspend fun decodeRegion(region: ImageRegionTile): Painter
 
-  fun recycle()
+  fun close()
 
   fun interface Factory {
     suspend fun create(params: FactoryParams): ImageRegionDecoder
@@ -33,4 +34,5 @@ internal interface ImageRegionDecoder {
 }
 
 // Used for overriding the decoder in screenshot tests.
+@SuppressLint("ComposeCompositionLocalUsage")
 internal val LocalImageRegionDecoderFactory = staticCompositionLocalOf { AndroidImageRegionDecoder.Factory }

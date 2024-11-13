@@ -2,13 +2,6 @@ plugins {
   `kotlin-dsl`
 }
 
-java {
-  toolchain {
-    // Jdk version for compiling :build-logic:convention.
-    languageVersion.set(JavaLanguageVersion.of(17))
-  }
-}
-
 dependencies {
   compileOnly(libs.plugin.agp)
   compileOnly(libs.plugin.kotlin)
@@ -40,7 +33,7 @@ gradlePlugin {
       implementationClass = "AndroidLibraryConventionPlugin"
     }
     register("androidLibraryPublishing") {
-      id = "me.saket.android.library.publishing"  // todo: rename to me.saket.library.publishing
+      id = "me.saket.library.publishing"
       implementationClass = "AndroidLibraryPublishingConventionPlugin"
     }
     register("androidTest") {

@@ -1,21 +1,29 @@
+@file:Suppress("INVISIBLE_MEMBER")
+
 package me.saket.telephoto.zoomable.coil
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
-import androidx.activity.ComponentActivity
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmapConfig
 import androidx.compose.ui.graphics.colorspace.ColorSpaces
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import app.cash.molecule.RecompositionMode
@@ -32,15 +40,19 @@ import coil.annotation.ExperimentalCoilApi
 import coil.decode.ImageDecoderDecoder
 import coil.decode.SvgDecoder
 import coil.imageLoader
+import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import coil.size.Dimension
 import coil.test.FakeImageLoaderEngine
 import com.dropbox.dropshots.Dropshots
+import com.google.modernstorage.storage.AndroidFileSystem
+import com.google.modernstorage.storage.toOkioPath
 import com.google.testing.junit.testparameterinjector.TestParameter
 import com.google.testing.junit.testparameterinjector.TestParameterInjector
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -50,8 +62,8 @@ import kotlinx.coroutines.withContext
 import leakcanary.LeakAssertions
 import me.saket.telephoto.subsamplingimage.ImageBitmapOptions
 import me.saket.telephoto.util.CiScreenshotValidator
+import me.saket.telephoto.util.ScreenshotTestActivity
 import me.saket.telephoto.util.compositionLocalProviderReturnable
-import me.saket.telephoto.util.prepareForScreenshotTest
 import me.saket.telephoto.util.waitUntil
 import me.saket.telephoto.zoomable.ZoomableImageSource
 import me.saket.telephoto.zoomable.ZoomableImageSource.ResolveResult
@@ -60,6 +72,7 @@ import me.saket.telephoto.zoomable.coil.CoilImageSourceTest.SvgDecodingState.Svg
 import me.saket.telephoto.zoomable.coil.CoilImageSourceTest.SvgDecodingState.SvgDecodingEnabled
 import me.saket.telephoto.zoomable.image.coil.test.R
 import me.saket.telephoto.zoomable.rememberZoomableImageState
+import okhttp3.HttpUrl
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -87,7 +100,7 @@ import coil.size.Size as CoilSize
 @RunWith(TestParameterInjector::class)
 @OptIn(ExperimentalCoilApi::class)
 class CoilImageSourceTest {
-  @get:Rule val rule = createAndroidComposeRule<ComponentActivity>()
+  @get:Rule val rule = createAndroidComposeRule<ScreenshotTestActivity>()
   @get:Rule val timeout = Timeout.seconds(10)!!
   @get:Rule val serverRule = MockWebServerRule()
   @get:Rule val testName = TestName()
@@ -104,16 +117,13 @@ class CoilImageSourceTest {
 
   @Before
   fun setUp() {
-    rule.activityRule.scenario.onActivity {
-      it.prepareForScreenshotTest()
-    }
-
     serverRule.server.dispatcher = object : Dispatcher() {
       override fun dispatch(request: RecordedRequest): MockResponse {
         return when (request.path) {
           "/placeholder_image.png" -> assetAsResponse("placeholder_image.png")
           "/full_image.png" -> assetAsResponse("full_image.png", delay = 300.milliseconds)
           "/animated_image.gif" -> assetAsResponse("animated_image.gif", delay = 300.milliseconds)
+          "/single_frame_gif.gif" -> assetAsResponse("single_frame_gif.gif", delay = 300.milliseconds)
           "/emoji.svg" -> assetAsResponse("emoji.svg")
           else -> error("unknown path = ${request.path}")
         }
@@ -124,6 +134,9 @@ class CoilImageSourceTest {
   @After
   fun tearDown() {
     LeakAssertions.assertNoLeaks()
+
+    Coil.imageLoader(rule.activity).diskCache?.clear()
+    Coil.reset()
   }
 
   @Test fun images_should_always_be_written_to_disk(
@@ -208,7 +221,7 @@ class CoilImageSourceTest {
   }
 
   @Test fun start_with_the_placeholder_image_then_load_the_full_image_using_subsampling() = runTest {
-    // Seed the placeholder image in cache.
+    // Seed the placeholder image in memory cache.
     val seedResult = context.imageLoader.execute(
       ImageRequest.Builder(context)
         .data(serverRule.server.url("placeholder_image.png"))
@@ -282,10 +295,10 @@ class CoilImageSourceTest {
   @Test fun correctly_resolve_local_images(
     @TestParameter requestData: LocalFileRequestDataParam
   ) = runTest {
-    var isImageDisplayed = false
+    lateinit var imageState: ZoomableImageState
     rule.setContent {
       ZoomableAsyncImage(
-        state = rememberZoomableImageState().also { isImageDisplayed = it.isImageDisplayed },
+        state = rememberZoomableImageState().also { imageState = it },
         modifier = Modifier.fillMaxSize(),
         model = ImageRequest.Builder(LocalContext.current)
           .data(requestData.data(LocalContext.current))
@@ -295,10 +308,12 @@ class CoilImageSourceTest {
       )
     }
 
-    rule.waitUntil(5.seconds) { isImageDisplayed }
+    rule.waitUntil(5.seconds) { imageState.isImageDisplayed }
     rule.runOnIdle {
       dropshots.assertSnapshot(rule.activity)
     }
+
+    assertThat(imageState.subSamplingState).isNotNull()
   }
 
   @Test fun correctly_resolve_svgs(
@@ -367,11 +382,41 @@ class CoilImageSourceTest {
     }
   }
 
-  // todo
-  @Test fun show_error_drawable_if_request_fails() {
+  // Regression test for https://github.com/saket/telephoto/issues/99.
+  @Test fun show_error_drawable_if_a_local_image_cached_in_memory_no_longer_exists() = runTest {
+    val imageInExternalStorage: Uri = context.copyImageToExternalStorage(
+      context.createFileFromAsset("full_image.png")
+    )
+
+    lateinit var imageState: ZoomableImageState
+    val stateRestorer = StateRestorationTester(rule)
+    stateRestorer.setContent {
+      ZoomableAsyncImage(
+        state = rememberZoomableImageState().also { imageState = it },
+        modifier = Modifier.fillMaxSize(),
+        model = ImageRequest.Builder(LocalContext.current)
+          .data(imageInExternalStorage)
+          .error(R.drawable.error_image)
+          .allowHardware(false) // Unsupported by Screenshot.capture()
+          .build(),
+        contentDescription = null
+      )
+    }
+
+    rule.waitUntil { imageState.isImageDisplayed }
+    AndroidFileSystem(context).delete(imageInExternalStorage.toOkioPath())
+
+    stateRestorer.emulateSavedInstanceStateRestore()
+
+    rule.waitUntil { imageState.isImageDisplayed }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity)
+    }
   }
 
-  @Test fun non_bitmaps_should_not_be_sub_sampled() = runTest {
+  @Test fun gifs_should_not_be_sub_sampled(
+    @TestParameter param: GifRequestDataParam
+  ) = runTest {
     Coil.setImageLoader(
       ImageLoader.Builder(context)
         .components { add(ImageDecoderDecoder.Factory()) }  // For GIFs.
@@ -379,11 +424,129 @@ class CoilImageSourceTest {
     )
 
     resolve {
-      serverRule.server.url("animated_image.gif")
+      serverRule.server.url(param.url)
     }.test {
       skipItems(1) // Default item.
       assertThat(awaitItem().delegate!!).isNotInstanceOf(ZoomableImageSource.SubSamplingDelegate::class.java)
     }
+  }
+
+  // Regression test for https://github.com/saket/telephoto/issues/37.
+  @Test fun reload_image_if_its_evicted_from_the_disk_cache_but_is_still_present_in_the_memory_cache() = runTest {
+    val memoryCache = context.imageLoader.memoryCache!!
+    val diskCache = context.imageLoader.diskCache!!
+
+    // Seed the image in both caches.
+    val imageUrl = serverRule.server.url("full_image.png").toString()
+    context.imageLoader.execute(
+      ImageRequest.Builder(context)
+        .data(imageUrl)
+        .memoryCachePolicy(CachePolicy.ENABLED)
+        .diskCachePolicy(CachePolicy.ENABLED)
+        .build()
+    )
+    assertThat(memoryCache[MemoryCache.Key(imageUrl)]).isNotNull()
+    diskCache.openSnapshot(imageUrl).let { snapshot ->
+      assertThat(snapshot).isNotNull()
+      snapshot!!.close()
+    }
+
+    // Clear only the disk cache.
+    diskCache.fileSystem.deleteRecursively(diskCache.directory)
+    assertThat(memoryCache[MemoryCache.Key(imageUrl)]).isNotNull()
+
+    // Make sure that the image gets reloaded from the network.
+    resolve { imageUrl }.test {
+      skipItems(1) // Default item.
+      assertThat(awaitItem().delegate!!).isInstanceOf(ZoomableImageSource.SubSamplingDelegate::class.java)
+    }
+  }
+
+  @Test fun image_url_with_nocache_http_header() = runTest {
+    serverRule.server.dispatcher = object : Dispatcher() {
+      override fun dispatch(request: RecordedRequest): MockResponse {
+        return assetAsResponse("full_image.png")
+          .addHeader("Cache-Control", "private, no-cache, no-store, must-revalidate")
+      }
+    }
+
+    lateinit var imageState: ZoomableImageState
+    val fullImageUrl: HttpUrl = withContext(Dispatchers.IO) {
+      serverRule.server.url("full_image.png")
+    }
+
+    val stateRestorer = StateRestorationTester(rule)
+    stateRestorer.setContent {
+      ZoomableAsyncImage(
+        state = rememberZoomableImageState().also { imageState = it },
+        modifier = Modifier
+          .fillMaxSize()
+          .wrapContentSize()
+          .size(300.dp),
+        model = ImageRequest.Builder(LocalContext.current)
+          .data(fullImageUrl)
+          .allowHardware(false) // Unsupported by Screenshot.capture()
+          .error(R.drawable.error_image)
+          .build(),
+        contentDescription = null,
+      )
+    }
+
+    rule.waitUntil(5.seconds) { imageState.isImageDisplayed }
+    assertThat(imageState.subSamplingState).isNotNull()
+
+    // Bug description: the image loads from the network on the first load and the memory cache
+    // on the second load. The second load crashes the app because telephoto incorrectly tries
+    // to load it as a content URI.
+    // Reproduction steps taken from https://github.com/saket/telephoto/issues/50.
+    stateRestorer.emulateSavedInstanceStateRestore()
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity)
+      assertThat(imageState.subSamplingState).isNotNull()
+    }
+  }
+
+  @Test fun image_is_not_reloaded_on_every_composition_when_image_request_contains_unstable_params() = runTest {
+    lateinit var imageState: ZoomableImageState
+    val fullImageUrl: HttpUrl = withContext(Dispatchers.IO) {
+      serverRule.server.url("full_image.png")
+    }
+
+    var loadCount = 0
+    var compositionCount = 0
+
+    rule.setContent {
+      val counter by produceState(initialValue = 0) {
+        while (true) {
+          this.value++
+          delay(50.milliseconds)
+        }
+      }
+      BasicText(text = counter.toString())
+
+      SideEffect {
+        compositionCount++
+      }
+
+      ZoomableAsyncImage(
+        state = rememberZoomableImageState().also { imageState = it },
+        modifier = Modifier
+          .fillMaxSize()
+          .wrapContentSize()
+          .size(300.dp),
+        model = ImageRequest.Builder(LocalContext.current)
+          .data(fullImageUrl)
+          .listener(onStart = { loadCount++ }) // <- Causes instability by creating a new listener on every composition.
+          .placeholder(ColorDrawable(0xDEADBEEF.toInt())) // <- Creates a new drawable on every composition.
+          .build(),
+        contentDescription = null,
+      )
+    }
+
+    rule.waitUntil {
+      imageState.isImageDisplayed && compositionCount >= 10
+    }
+    assertThat(loadCount).isEqualTo(1)
   }
 
   context(TestScope)
@@ -421,6 +584,12 @@ class CoilImageSourceTest {
     RemoteUrl({ error("unsupported") }),
     AssetContentUriSvg({ Uri.parse("file:///android_asset/emoji.svg") }),
     FileContentUriSvg({ Uri.parse("file:///${createFileFromAsset("emoji.svg")}") }),
+  }
+
+  @Suppress("unused")
+  enum class GifRequestDataParam(val url: String) {
+    AnimatedGif("animated_image.gif"),
+    SingleFrameGif("single_frame_gif.gif"),
   }
 
   @Suppress("unused")
@@ -466,4 +635,20 @@ private fun Context.createFileFromAsset(assetName: String): Path {
       write(path) { writeAll(assets.open(assetName).source()) }
     }
   }
+}
+
+private suspend fun Context.copyImageToExternalStorage(imageFile: Path): Uri {
+  val fs = AndroidFileSystem(this)
+  val uri = fs.createMediaStoreUri(
+    filename = imageFile.name,
+    collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+    directory = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath,
+  )!!
+  fs.write(uri.toOkioPath()) {
+    fs.read(imageFile) {
+      writeAll(this)
+    }
+  }
+  fs.scanUri(uri, mimeType = "image/png")
+  return uri
 }

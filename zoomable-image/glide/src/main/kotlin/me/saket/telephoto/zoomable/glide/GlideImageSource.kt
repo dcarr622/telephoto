@@ -5,6 +5,7 @@ package me.saket.telephoto.zoomable.glide
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,6 +28,7 @@ import me.saket.telephoto.subsamplingimage.ImageBitmapOptions
 import me.saket.telephoto.subsamplingimage.SubSamplingImageSource
 import me.saket.telephoto.zoomable.ZoomableImageSource
 import me.saket.telephoto.zoomable.ZoomableImageSource.ResolveResult
+import me.saket.telephoto.zoomable.copy
 import me.saket.telephoto.zoomable.internal.RememberWorker
 import okio.Path
 import okio.Path.Companion.toOkioPath
@@ -34,9 +36,9 @@ import kotlin.math.roundToInt
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import me.saket.telephoto.zoomable.glide.Size as GlideSize
-import me.saket.telephoto.zoomable.internal.copy
 
-internal class GlideImageSource(
+@Immutable
+internal data class GlideImageSource(
   private val requestManager: RequestManager,
   private val request: RequestBuilder<Drawable>,
   private val isVectorDrawable: Boolean,

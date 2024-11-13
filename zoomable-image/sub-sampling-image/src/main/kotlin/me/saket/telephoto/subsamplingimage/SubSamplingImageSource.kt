@@ -13,10 +13,14 @@ import androidx.compose.runtime.Stable
 import androidx.compose.ui.graphics.ImageBitmap
 import okio.BufferedSource
 import okio.Closeable
+import okio.FileSystem
 import okio.Path
+import okio.Path.Companion.toPath
 import okio.Source
 import okio.buffer
+import okio.source
 import java.io.InputStream
+import kotlin.LazyThreadSafetyMode.NONE
 
 /**
  * Image to display with [SubSamplingImage]. Can be one of:
@@ -80,20 +84,42 @@ sealed interface SubSamplingImageSource : Closeable {
     ): SubSamplingImageSource = ResourceImageSource(id, preview)
 
     /**
-     * An image exposed by a content provider. A common use-case for this
-     * would be to display images shared by other apps.
-     *
-     * @param preview See [SubSamplingImageSource.preview].
-     *
-     * @return The returned value is stable and does not need to be remembered.
+     * Same as [SubSamplingImageSource.contentUriOrNull], but throws an error if
+     * the `uri` is unsupported by [ContentResolver.openInputStream].
      */
     @Stable
     fun contentUri(
       uri: Uri,
       preview: ImageBitmap? = null
     ): SubSamplingImageSource {
-      val assetPath = uri.asAssetPathOrNull()
-      return if (assetPath != null) AssetImageSource(assetPath, preview) else UriImageSource(uri, preview)
+      return contentUriOrNull(uri, preview)
+        ?: error("Uri unsupported by ContentResolver#openInputStream(): $uri")
+    }
+
+    /**
+     * An image exposed by a content provider. A common use-case for this
+     * would be to display images shared by other apps.
+     *
+     * @param preview See [SubSamplingImageSource.preview].
+     *
+     * @return A `SubSamplingImageSource` if the `uri` is supported by
+     * [ContentResolver.openInputStream] or null. The returned value is stable
+     * and does not need to be remembered.
+     */
+    @Stable
+    fun contentUriOrNull(
+      uri: Uri,
+      preview: ImageBitmap? = null
+    ): SubSamplingImageSource? {
+      // While ContentResolver can be used for reading assets, files, resources uris,
+      // reading them through their specialized APIs can be significantly faster.
+      return when (val type = UriType.parse(uri)) {
+        is UriType.AssetUri -> AssetImageSource(type.asset, preview)
+        is UriType.FileUri -> FileImageSource(type.path, preview, onClose = null)
+        is UriType.ResourceUri -> ResourceImageSource(type.resourceId, preview)
+        is UriType.ContentUri -> UriImageSource(type.uri, preview)
+        null -> null
+      }
     }
 
     /**
@@ -112,6 +138,9 @@ sealed interface SubSamplingImageSource : Closeable {
     ): SubSamplingImageSource = RawImageSource(source, preview, onClose)
   }
 
+  /** Peeks into the source without consuming its bytes. */
+  fun peek(context: Context): BufferedSource
+
   suspend fun decoder(context: Context): BitmapRegionDecoder
 
   /** Called when the image is no longer visible. */
@@ -126,6 +155,10 @@ internal data class FileImageSource(
 ) : SubSamplingImageSource {
   init {
     check(path.isAbsolute)
+  }
+
+  override fun peek(context: Context): BufferedSource {
+    return FileSystem.SYSTEM.source(path).buffer()
   }
 
   override suspend fun decoder(context: Context): BitmapRegionDecoder {
@@ -146,18 +179,22 @@ internal data class AssetImageSource(
   override val preview: ImageBitmap?
 ) : SubSamplingImageSource {
 
-  fun peek(context: Context): InputStream {
-    return context.assets.open(asset.path, AssetManager.ACCESS_RANDOM)
+  override fun peek(context: Context): BufferedSource {
+    return inputStream(context).source().buffer()
   }
 
   override suspend fun decoder(context: Context): BitmapRegionDecoder {
-    return peek(context).use { stream ->
-      check (stream is AssetManager.AssetInputStream) {
+    return inputStream(context).use { stream ->
+      check(stream is AssetManager.AssetInputStream) {
         error("BitmapRegionDecoder won't be able to optimize reading of this asset")
       }
       @Suppress("DEPRECATION")
       BitmapRegionDecoder.newInstance(stream, /* ignored */ false)!!
     }
+  }
+
+  private fun inputStream(context: Context): InputStream {
+    return context.assets.open(asset.path, AssetManager.ACCESS_RANDOM)
   }
 }
 
@@ -167,16 +204,20 @@ internal data class ResourceImageSource(
   override val preview: ImageBitmap?,
 ) : SubSamplingImageSource {
 
-  @SuppressLint("ResourceType")
-  fun peek(context: Context): InputStream {
-    return context.resources.openRawResource(id)
+  override fun peek(context: Context): BufferedSource {
+    return inputStream(context).source().buffer()
   }
 
   override suspend fun decoder(context: Context): BitmapRegionDecoder {
-    return peek(context).use { stream ->
+    return inputStream(context).use { stream ->
       @Suppress("DEPRECATION")
       BitmapRegionDecoder.newInstance(stream, /* ignored */ false)!!
     }
+  }
+
+  @SuppressLint("ResourceType")
+  private fun inputStream(context: Context): InputStream {
+    return context.resources.openRawResource(id)
   }
 }
 
@@ -186,37 +227,49 @@ internal data class UriImageSource(
   override val preview: ImageBitmap?
 ) : SubSamplingImageSource {
 
-  fun peek(context: Context): InputStream {
-    return context.contentResolver.openInputStream(uri) ?: error("Failed to read uri: $uri")
+  override fun peek(context: Context): BufferedSource {
+    return inputStream(context).source().buffer()
   }
 
   override suspend fun decoder(context: Context): BitmapRegionDecoder {
-    @Suppress("DEPRECATION")
-    return peek(context).use {
-      stream -> BitmapRegionDecoder.newInstance(stream, /* ignored */ false)!!
+    return inputStream(context).use { stream ->
+      @Suppress("DEPRECATION")
+      BitmapRegionDecoder.newInstance(stream, /* ignored */ false)!!
     }
+  }
+
+  private fun inputStream(context: Context): InputStream {
+    return context.contentResolver.openInputStream(uri) ?: error("Failed to read uri: $uri")
   }
 }
 
 @Immutable
 internal data class RawImageSource(
-  val source: () -> Source,
+  private val source: () -> Source,
   override val preview: ImageBitmap? = null,
   private val onClose: Closeable?
 ) : SubSamplingImageSource {
 
-  fun peek(): BufferedSource {
-    return source().buffer().peek()
+  private val bufferedSource: BufferedSource by lazy(NONE) {
+    source().buffer()
+  }
+
+  override fun peek(context: Context): BufferedSource {
+    return bufferedSource.peek()
   }
 
   override suspend fun decoder(context: Context): BitmapRegionDecoder {
-    return source().buffer().inputStream().use { stream ->
+    // This uses a peeking source because the image source can be decoded
+    // by multiple decoders in parallel. A downside of this is that the
+    // upstream source will never be consumed, which is probably okay?
+    return peek(context).inputStream().use { stream ->
       @Suppress("DEPRECATION")
       BitmapRegionDecoder.newInstance(stream, /* ignored */ false)!!
     }
   }
 
   override fun close() {
+    bufferedSource.close()
     onClose?.close()
   }
 }
@@ -225,7 +278,49 @@ internal data class RawImageSource(
 @JvmInline
 internal value class AssetPath(val path: String)
 
-internal fun Uri.asAssetPathOrNull(): AssetPath? {
-  val isAssetUri = scheme == ContentResolver.SCHEME_FILE && pathSegments.firstOrNull() == "android_asset"
-  return if (isAssetUri) AssetPath(pathSegments.drop(1).joinToString("/")) else null
+private sealed interface UriType {
+  data class AssetUri(val asset: AssetPath) : UriType
+  data class FileUri(val path: Path) : UriType
+  data class ResourceUri(@DrawableRes val resourceId: Int) : UriType
+  data class ContentUri(val uri: Uri) : UriType
+
+  companion object {
+    fun parse(uri: Uri): UriType? {
+      return when (uri.scheme) {
+        ContentResolver.SCHEME_CONTENT -> {
+          ContentUri(uri)
+        }
+        ContentResolver.SCHEME_ANDROID_RESOURCE -> {
+          uri.findResourceId()?.let(::ResourceUri) ?: ContentUri(uri)
+        }
+        ContentResolver.SCHEME_FILE -> {
+          when (uri.pathSegments.firstOrNull()) {
+            "android_asset" -> AssetUri(AssetPath(uri.pathSegments.drop(1).joinToString("/")))
+            else -> uri.path?.let { FileUri(it.toPath()) }
+          }
+        }
+        null -> {
+          if (uri.path?.startsWith('/') == true && uri.pathSegments.isNotEmpty()) {
+            // File URIs without a scheme are invalid but have had historic support
+            // from many image loaders, including Coil. Telephoto is forced to support
+            // them because it promises to be a drop-in replacement for AsyncImage().
+            // https://github.com/saket/telephoto/issues/19
+            FileUri(uri.toString().toPath())
+          } else {
+            null
+          }
+        }
+        else -> null
+      }
+    }
+
+    @DrawableRes private fun Uri.findResourceId(): Int? {
+      check(scheme == ContentResolver.SCHEME_ANDROID_RESOURCE)
+      return if (authority?.isNotBlank() == true) {
+        pathSegments.singleOrNull()?.toIntOrNull()
+      } else {
+        null
+      }
+    }
+  }
 }

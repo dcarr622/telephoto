@@ -5,17 +5,17 @@ import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.toSize
 
-internal fun BitmapRegionTileGrid.Companion.generate(
-  canvasSize: IntSize,
+internal fun ImageRegionTileGrid.Companion.generate(
+  viewportSize: IntSize,
   unscaledImageSize: IntSize,
-  minTileSize: IntSize,
-): BitmapRegionTileGrid {
-  val baseSampleSize = BitmapSampleSize.calculateFor(
-    canvasSize = canvasSize,
+  minTileSize: IntSize = viewportSize / 2,
+): ImageRegionTileGrid {
+  val baseSampleSize = ImageSampleSize.calculateFor(
+    viewportSize = viewportSize,
     scaledImageSize = unscaledImageSize
   )
 
-  val baseTile = BitmapRegionTile(
+  val baseTile = ImageRegionTile(
     sampleSize = baseSampleSize,
     bounds = IntRect(IntOffset.Zero, unscaledImageSize)
   )
@@ -34,15 +34,15 @@ internal fun BitmapRegionTileGrid.Companion.generate(
     // Number of tiles can be fractional. To avoid this, the fractional
     // part is discarded and the last tiles on each axis are stretched
     // to cover any remaining space of the image.
-    val xTileCount: Int = unscaledImageSize.width / tileSize.width
-    val yTileCount: Int = unscaledImageSize.height / tileSize.height
+    val xTileCount: Int = (unscaledImageSize.width / tileSize.width).coerceAtLeast(1)
+    val yTileCount: Int = (unscaledImageSize.height / tileSize.height).coerceAtLeast(1)
 
-    val tileGrid = ArrayList<BitmapRegionTile>(xTileCount * yTileCount)
+    val tileGrid = ArrayList<ImageRegionTile>(xTileCount * yTileCount)
     for (x in 0 until xTileCount) {
       for (y in 0 until yTileCount) {
         val isLastXTile = x == xTileCount - 1
         val isLastYTile = y == yTileCount - 1
-        val tile = BitmapRegionTile(
+        val tile = ImageRegionTile(
           sampleSize = sampleSize,
           bounds = IntRect(
             left = x * tileSize.width,
@@ -58,30 +58,30 @@ internal fun BitmapRegionTileGrid.Companion.generate(
     return@associateWith tileGrid
   }
 
-  return BitmapRegionTileGrid(
+  return ImageRegionTileGrid(
     base = baseTile,
     foreground = foregroundTiles,
   )
 }
 
-/** Calculates a [BitmapSampleSize] for fitting a source image in its layout bounds. */
-internal fun BitmapSampleSize.Companion.calculateFor(
-  canvasSize: IntSize,
+/** Calculates a [ImageSampleSize] for fitting a source image in its layout bounds. */
+internal fun ImageSampleSize.Companion.calculateFor(
+  viewportSize: IntSize,
   scaledImageSize: IntSize
-): BitmapSampleSize {
-  check(canvasSize.minDimension > 0f) { "Can't calculate a sample size for $canvasSize" }
+): ImageSampleSize {
+  check(viewportSize.minDimension > 0f) { "Can't calculate a sample size for $viewportSize" }
 
   val zoom = minOf(
-    canvasSize.width / scaledImageSize.width.toFloat(),
-    canvasSize.height / scaledImageSize.height.toFloat()
+    viewportSize.width / scaledImageSize.width.toFloat(),
+    viewportSize.height / scaledImageSize.height.toFloat()
   )
   return calculateFor(zoom)
 }
 
-/** Calculates a [BitmapSampleSize] for fitting a source image in its layout bounds. */
-internal fun BitmapSampleSize.Companion.calculateFor(zoom: Float): BitmapSampleSize {
+/** Calculates a [ImageSampleSize] for fitting a source image in its layout bounds. */
+internal fun ImageSampleSize.Companion.calculateFor(zoom: Float): ImageSampleSize {
   if (zoom == 0f) {
-    return BitmapSampleSize(1)
+    return ImageSampleSize(1)
   }
 
   var sampleSize = 1
@@ -89,8 +89,8 @@ internal fun BitmapSampleSize.Companion.calculateFor(zoom: Float): BitmapSampleS
     // BitmapRegionDecoder requires values based on powers of 2.
     sampleSize *= 2
   }
-  return BitmapSampleSize(sampleSize)
+  return ImageSampleSize(sampleSize)
 }
 
-private operator fun BitmapSampleSize.div(other: BitmapSampleSize) = BitmapSampleSize(size / other.size)
-private operator fun BitmapSampleSize.div(other: Int) = BitmapSampleSize(size / other)
+private operator fun ImageSampleSize.div(other: ImageSampleSize) = ImageSampleSize(size / other.size)
+private operator fun ImageSampleSize.div(other: Int) = ImageSampleSize(size / other)

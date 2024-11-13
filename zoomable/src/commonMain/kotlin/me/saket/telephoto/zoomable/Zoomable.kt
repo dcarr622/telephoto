@@ -3,7 +3,7 @@ package me.saket.telephoto.zoomable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.runtime.Stable
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
@@ -16,6 +16,7 @@ import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.toSize
 import kotlinx.coroutines.launch
+import me.saket.telephoto.zoomable.internal.HardwareShortcutsElement
 import me.saket.telephoto.zoomable.internal.MutatePriorities
 import me.saket.telephoto.zoomable.internal.TappableAndQuickZoomableElement
 import me.saket.telephoto.zoomable.internal.TransformableElement
@@ -27,8 +28,8 @@ import me.saket.telephoto.zoomable.internal.stopTransformation
  * composables so that your users can use the same familiar gestures throughout your app. It offers,
  *
  * - Pinch to zoom and flings
- * - Double tap to zoom
- * - Single finger zoom (double tap and hold)
+ * - Double click to zoom
+ * - Single finger zoom (double click and hold)
  * - Haptic feedback for over/under zoom
  * - Compatibility with nested scrolling
  * - Click listeners
@@ -48,24 +49,49 @@ fun Modifier.zoomable(
   onClick: ((Offset) -> Unit)? = null,
   onLongClick: ((Offset) -> Unit)? = null,
   clipToBounds: Boolean = true,
+  onDoubleClick: DoubleClickToZoomListener = DoubleClickToZoomListener.cycle(),
 ): Modifier {
   check(state is RealZoomableState)
   return this
     .thenIf(clipToBounds) {
       Modifier.clipToBounds()
     }
-    .onSizeChanged { state.contentLayoutSize = it.toSize() }
+    .onSizeChanged { state.viewportSize = it.toSize() }
     .then(
       ZoomableElement(
         state = state,
         enabled = enabled,
         onClick = onClick,
         onLongClick = onLongClick,
+        onDoubleClick = onDoubleClick,
       )
     )
-    .thenIf(state.autoApplyTransformations) {
-      Modifier.applyTransformation(state.contentTransformation)
+    .thenIf(state.hardwareShortcutsSpec.enabled) {
+      Modifier
+        .then(HardwareShortcutsElement(state, state.hardwareShortcutsSpec))
+        .focusable()
     }
+    .thenIf(state.autoApplyTransformations) {
+      Modifier.applyTransformation { state.contentTransformation }
+    }
+}
+
+@Deprecated("Kept for binary compatibility", level = DeprecationLevel.HIDDEN)
+fun Modifier.zoomable(
+  state: ZoomableState,
+  enabled: Boolean = true,
+  onClick: ((Offset) -> Unit)? = null,
+  onLongClick: ((Offset) -> Unit)? = null,
+  clipToBounds: Boolean = true,
+): Modifier {
+  return this.zoomable(
+    state = state,
+    enabled = enabled,
+    onClick = onClick,
+    onLongClick = onLongClick,
+    clipToBounds = clipToBounds,
+    onDoubleClick = DoubleClickToZoomListener.cycle(),
+  )
 }
 
 private data class ZoomableElement(
@@ -73,6 +99,7 @@ private data class ZoomableElement(
   private val enabled: Boolean,
   private val onClick: ((Offset) -> Unit)?,
   private val onLongClick: ((Offset) -> Unit)?,
+  private val onDoubleClick: DoubleClickToZoomListener,
 ) : ModifierNodeElement<ZoomableNode>() {
 
   override fun create(): ZoomableNode = ZoomableNode(
@@ -80,6 +107,7 @@ private data class ZoomableElement(
     enabled = enabled,
     onClick = onClick,
     onLongClick = onLongClick,
+    suspendableOnDoubleClick = onDoubleClick,
   )
 
   override fun update(node: ZoomableNode) {
@@ -88,6 +116,7 @@ private data class ZoomableElement(
       enabled = enabled,
       onClick = onClick,
       onLongClick = onLongClick,
+      onDoubleClick = onDoubleClick,
     )
   }
 
@@ -97,12 +126,14 @@ private data class ZoomableElement(
     properties["enabled"] = enabled
     properties["onClick"] = onClick
     properties["onLongClick"] = onLongClick
+    properties["onDoubleClick"] = onDoubleClick
   }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 private class ZoomableNode(
   private var state: RealZoomableState,
+  private var suspendableOnDoubleClick: DoubleClickToZoomListener,
   enabled: Boolean,
   onClick: ((Offset) -> Unit)?,
   onLongClick: ((Offset) -> Unit)?,
@@ -115,27 +146,28 @@ private class ZoomableNode(
       state.transformableState.stopTransformation(MutatePriorities.FlingAnimation)
     }
   }
-  val onDoubleTap: (centroid: Offset) -> Unit = { centroid ->
+  val onDoubleClick: (centroid: Offset) -> Unit = { centroid ->
     coroutineScope.launch {
-      state.handleDoubleTapZoomTo(centroid = centroid)
+      suspendableOnDoubleClick.onDoubleClick(state, centroid)
     }
   }
-
   val onQuickZoomStopped = {
     if (state.isZoomOutsideRange()) {
       coroutineScope.launch {
         hapticFeedback.performHapticFeedback()
-        state.smoothlySettleZoomOnGestureEnd()
+        state.animateSettlingOfZoomOnGestureEnd()
       }
     }
   }
   val onTransformStopped: (velocity: Velocity) -> Unit = { velocity ->
-    coroutineScope.launch {
-      if (state.isZoomOutsideRange()) {
-        hapticFeedback.performHapticFeedback()
-        state.smoothlySettleZoomOnGestureEnd()
-      } else {
-        state.fling(velocity = velocity, density = requireDensity())
+    if (state.isReadyToInteract) {
+      coroutineScope.launch {
+        if (state.isZoomOutsideRange()) {
+          hapticFeedback.performHapticFeedback()
+          state.animateSettlingOfZoomOnGestureEnd()
+        } else {
+          state.fling(velocity = velocity, density = requireDensity())
+        }
       }
     }
   }
@@ -146,7 +178,7 @@ private class ZoomableNode(
     onPress = onPress,
     onTap = onClick,
     onLongPress = onLongClick,
-    onDoubleTap = onDoubleTap,
+    onDoubleTap = onDoubleClick,
     onQuickZoomStopped = onQuickZoomStopped,
   ).create()
 
@@ -169,7 +201,14 @@ private class ZoomableNode(
     enabled: Boolean,
     onClick: ((Offset) -> Unit)?,
     onLongClick: ((Offset) -> Unit)?,
+    onDoubleClick: DoubleClickToZoomListener,
   ) {
+    if (this.state != state) {
+      // Note to self: when the state is updated, the delegated
+      // nodes are implicitly reset in the following update() calls.
+      this.state = state
+    }
+    this.suspendableOnDoubleClick = onDoubleClick
     transformableNode.update(
       state = state.transformableState,
       canPan = state::canConsumePanChange,
@@ -181,7 +220,7 @@ private class ZoomableNode(
       onPress = onPress,
       onTap = onClick,
       onLongPress = onLongClick,
-      onDoubleTap = onDoubleTap,
+      onDoubleTap = this.onDoubleClick,
       onQuickZoomStopped = onQuickZoomStopped,
       transformableState = state.transformableState,
       gesturesEnabled = enabled,

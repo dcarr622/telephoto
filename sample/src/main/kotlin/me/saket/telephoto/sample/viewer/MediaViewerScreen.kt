@@ -2,6 +2,7 @@ package me.saket.telephoto.sample.viewer
 
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.SnapSpec
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -25,8 +26,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import coil.request.ImageRequest
@@ -94,19 +98,23 @@ private fun MediaPage(
   modifier: Modifier = Modifier,
 ) {
   val zoomableState = rememberZoomableState()
+  val focusRequester = remember { FocusRequester() }
+
   val flickState = rememberFlickToDismissState(dismissThresholdRatio = 0.05f)
   CloseScreenOnFlickDismissEffect(flickState)
 
   FlickToDismiss(
     state = flickState,
-    modifier = Modifier.background(backgroundColorFor(flickState.gestureState)),
+    modifier = modifier.background(backgroundColorFor(flickState.gestureState)),
   ) {
     when (model) {
       is MediaItem.Image -> {
         // TODO: handle errors here.
         val imageState = rememberZoomableImageState(zoomableState)
         ZoomableAsyncImage(
-          modifier = modifier,
+          modifier = Modifier
+            .fillMaxSize()
+            .focusRequester(focusRequester),
           state = imageState,
           model = ImageRequest.Builder(LocalContext.current)
             .data(model.fullSizedUrl)
@@ -115,6 +123,13 @@ private fun MediaPage(
             .build(),
           contentDescription = model.caption,
         )
+
+        // Focus the image so that it can receive keyboard and mouse shortcut events.
+        if (isActivePage) {
+          LaunchedEffect(Unit) {
+            focusRequester.requestFocus()
+          }
+        }
 
         AnimatedVisibility(
           modifier = Modifier.align(Alignment.Center),
@@ -128,12 +143,12 @@ private fun MediaPage(
 
   if (flickState.gestureState is FlickToDismissState.GestureState.Dragging) {
     LaunchedEffect(Unit) {
-      zoomableState.resetZoom(withAnimation = true)
+      zoomableState.resetZoom()
     }
   }
   if (!isActivePage) {
     LaunchedEffect(Unit) {
-      zoomableState.resetZoom(withAnimation = false)
+      zoomableState.resetZoom(animationSpec = SnapSpec())
     }
   }
 }

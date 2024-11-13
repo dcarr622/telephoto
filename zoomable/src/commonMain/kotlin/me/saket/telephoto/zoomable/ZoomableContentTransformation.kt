@@ -31,8 +31,9 @@ interface ZoomableContentTransformation {
 
   /**
    * The size of the zoomable content that is currently known to [Modifier.zoomable].
-   * This is calculated using the value given to [ZoomableState.setContentLocation] and may be
-   * one frame behind the UI. Useful for synchronizing other elements with the zoomable content.
+   * This is calculated using the value given to [ZoomableState.setContentLocation] and
+   * does not account for the zoom and pan transformations. Useful for synchronizing
+   * other elements with the zoomable content.
    */
   val contentSize: Size
 
@@ -41,8 +42,8 @@ interface ZoomableContentTransformation {
    * to zoom gestures. This value represents the scaling factor that should be applied
    * to the content to achieve the desired zoom level.
    *
-   * Values on both the axes can be less than 0 if the image size is larger than
-   * its layout size.
+   * Values on both the axes can be less than 0 if the content size is larger than
+   * its viewport size.
    */
   val scale: ScaleFactor
 
@@ -69,7 +70,7 @@ interface ZoomableContentTransformation {
 
   /**
    * Central point around which the last pan/zoom gesture was made with respect to the
-   * layout bounds. Will be unspecified if the content hasn't been interacted with yet.
+   * viewport bounds. Will be `null` if the content hasn't been interacted with yet.
    */
   val centroid: Offset?
 
@@ -85,15 +86,21 @@ interface ZoomableContentTransformation {
 
     /**
      * Scale applied by the user using zoom gestures. The final scale of the content
-     * is calculated using [initialScale] x [userZoom].
+     * is calculated using [initialScale] x [userZoom], and will always be lower or equal
+     * to [ZoomSpec.maxZoomFactor].
+     *
+     * For example, a `userZoom` of `1.5f` indicates that the content is zoomed 150% from its
+     * [initialScale].
      */
     val userZoom: Float
   }
 }
 
 @Stable
-internal fun Modifier.applyTransformation(transformation: ZoomableContentTransformation): Modifier {
+internal fun Modifier.applyTransformation(transformation: () -> ZoomableContentTransformation): Modifier {
   return graphicsLayer {
+    @Suppress("NAME_SHADOWING")
+    val transformation = transformation()
     scaleX = transformation.scale.scaleX
     scaleY = transformation.scale.scaleY
     rotationZ = transformation.rotationZ

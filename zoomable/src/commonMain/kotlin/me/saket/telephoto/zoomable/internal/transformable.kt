@@ -30,14 +30,20 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.SuspendingPointerInputModifierNode
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.util.addPointerInputChange
+import androidx.compose.ui.node.CompositionLocalConsumerModifierNode
 import androidx.compose.ui.node.DelegatingNode
 import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.currentValueOf
 import androidx.compose.ui.platform.InspectorInfo
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.util.fastForEach
 import kotlinx.coroutines.CancellationException
@@ -86,7 +92,8 @@ internal data class TransformableElement(
   private val onTransformStopped: (velocity: Velocity) -> Unit = {},
 ) : ModifierNodeElement<TransformableNode>() {
   override fun create(): TransformableNode = TransformableNode(
-    state, canPan, lockRotationOnZoomPan, enabled, onTransformStopped)
+    state, canPan, lockRotationOnZoomPan, enabled, onTransformStopped
+  )
 
   override fun update(node: TransformableNode) {
     node.update(state, canPan, lockRotationOnZoomPan, enabled, onTransformStopped)
@@ -108,7 +115,7 @@ internal class TransformableNode(
   private var lockRotationOnZoomPan: Boolean,
   private var enabled: Boolean,
   private var onTransformStopped: (velocity: Velocity) -> Unit = {},
-) : DelegatingNode() {
+) : DelegatingNode(), CompositionLocalConsumerModifierNode {
 
   private val updatedCanPan: (Offset) -> Boolean = { canPan.invoke(it) }
   private val updatedOnTransformStopped: (Velocity) -> Unit = { onTransformStopped.invoke(it) }
@@ -147,9 +154,10 @@ internal class TransformableNode(
           wasCancelled = true
           if (!isActive) throw exception
         } finally {
-          // todo: get this from LocalViewConfiguration.
-          val maximumVelocity = Velocity(Int.MAX_VALUE.toFloat(), Int.MAX_VALUE.toFloat())
-          val velocity = if (wasCancelled) Velocity.Zero else velocityTracker.calculateVelocity(maximumVelocity)
+          val maximumVelocity = currentValueOf(LocalViewConfiguration).let {
+            Velocity(it.maximumFlingVelocity, it.maximumFlingVelocity)
+          }
+          val velocity = if (wasCancelled) Velocity.Zero else velocityTracker.calculateFiniteVelocity(maximumVelocity)
           channel.trySend(TransformStopped(velocity))
         }
       }
@@ -187,15 +195,16 @@ private suspend fun AwaitPointerEventScope.detectZoom(
   var zoom = 1f
   var pan = Offset.Zero
   var pastTouchSlop = false
-  val touchSlop = viewConfiguration.touchSlop
   var lockedToPanZoom = false
-  awaitFirstDown(requireUnconsumed = false)
+  val trackingPointerId = awaitFirstDown(requireUnconsumed = false).id
   do {
     val event = awaitPointerEvent()
     val canceled = event.changes.fastAny { it.isConsumed }
     if (!canceled) {
       event.changes.fastForEach {
-        velocityTracker.addPointerInputChange(it)
+        if (it.id == trackingPointerId) {
+          velocityTracker.addPointerInputChange(it)
+        }
       }
 
       val zoomChange = event.calculateZoom()
@@ -211,6 +220,7 @@ private suspend fun AwaitPointerEventScope.detectZoom(
         val zoomMotion = abs(1 - zoom) * centroidSize
         val rotationMotion = abs(rotation * PI.toFloat() * centroidSize / 180f)
         val panMotion = pan.getDistance()
+        val touchSlop = viewConfiguration.pointerSlop(event.changes[0].type)
 
         if (event.changes.size > 1 ||
           zoomMotion > touchSlop ||
@@ -256,4 +266,33 @@ private sealed class TransformEvent {
     val rotationChange: Float,
     val centroid: Offset,
   ) : TransformEvent()
+}
+
+/**
+ * Copied from compose.foundation to solve incompatibility with FlickToDismiss.
+ *
+ * [More details](https://issuetracker.google.com/issues/348923065).
+ *
+ * [Original code](https://cs.android.com/androidx/platform/frameworks/support/+/androidx-main:compose/foundation/foundation/src/commonMain/kotlin/androidx/compose/foundation/gestures/DragGestureDetector.kt;l=940;drc=a18f72ab3de68971fb30d894d41f4441aa09fd4f).
+ */
+private fun ViewConfiguration.pointerSlop(pointerType: PointerType): Float {
+  return when (pointerType) {
+    PointerType.Mouse -> {
+      val mouseSlop = 0.125.dp
+      val defaultTouchSlop = 18.dp // The default touch slop on Android devices
+      touchSlop * (mouseSlop / defaultTouchSlop)
+    }
+    else -> touchSlop
+  }
+}
+
+// Workaround for https://github.com/saket/telephoto/issues/97
+// (https://issuetracker.google.com/issues/309841148#comment7)
+private fun VelocityTracker.calculateFiniteVelocity(maximumVelocity: Velocity): Velocity {
+  val calculated = calculateVelocity(maximumVelocity = maximumVelocity)
+  return if (calculated.x.isNaN() || calculated.y.isNaN()) {
+    maximumVelocity
+  } else {
+    calculated
+  }
 }

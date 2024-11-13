@@ -1,20 +1,19 @@
+@file:Suppress("NAME_SHADOWING")
+
 package me.saket.telephoto.subsamplingimage
 
+import android.annotation.SuppressLint
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.DefaultAlpha
-import androidx.compose.ui.graphics.Paint
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.Role
@@ -29,7 +28,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toOffset
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.util.fastForEach
-import me.saket.telephoto.subsamplingimage.internal.createRotationMatrix
+import me.saket.telephoto.subsamplingimage.internal.SubSamplingImageSemanticState
+import me.saket.telephoto.subsamplingimage.internal.ViewportImageTile
+import me.saket.telephoto.subsamplingimage.internal.imageSemanticState
 import me.saket.telephoto.subsamplingimage.internal.toCeilInt
 
 /**
@@ -48,29 +49,24 @@ fun SubSamplingImage(
   colorFilter: ColorFilter? = null,
 ) {
   check(state is RealSubSamplingImageState)
-  val paint = remember { Paint() }.also {
-    it.alpha = alpha
-    it.colorFilter = colorFilter
-  }
+
   val onDraw: DrawScope.() -> Unit = {
-    state.tiles.fastForEach { tile ->
-      if (tile.bitmap != null && state.isImageLoaded) {
-        drawIntoCanvas {
-          it.nativeCanvas.drawBitmap(
-            tile.bitmap.asAndroidBitmap(),
-            tile.createRotationMatrix(),
-            paint.asFrameworkPaint(),
+    if (state.isImageDisplayed) {
+      state.viewportImageTiles.fastForEach { tile ->
+        drawImageTile(
+          tile = tile,
+          alpha = alpha,
+          colorFilter = colorFilter,
+        )
+
+        if (state.showTileBounds) {
+          drawRect(
+            color = Color.Black,
+            topLeft = tile.bounds.topLeft.toOffset(),
+            size = tile.bounds.size.toSize(),
+            style = Stroke(width = 2.dp.toPx()),
           )
         }
-      }
-
-      if (state.showTileBounds) {
-        drawRect(
-          color = Color.Black,
-          topLeft = tile.bounds.topLeft.toOffset(),
-          size = tile.bounds.size.toSize(),
-          style = Stroke(width = 2.dp.toPx())
-        )
       }
     }
   }
@@ -78,21 +74,53 @@ fun SubSamplingImage(
   Box(
     modifier
       .contentDescription(contentDescription)
-      .onSizeChanged { state.canvasSize = it }
       .drawBehind(onDraw)
+      .onSizeChanged { state.viewportSize = it }
       .wrapContentSizeIfNeeded(state.imageSize)
+      .semantics {
+        this.imageSemanticState = SubSamplingImageSemanticState(
+          isImageDisplayed = state.isImageDisplayed,
+          isImageDisplayedInFullQuality = state.isImageDisplayedInFullQuality,
+          tiles = state.viewportImageTiles,
+        )
+      }
+  )
+}
+
+private fun DrawScope.drawImageTile(
+  tile: ViewportImageTile,
+  alpha: Float,
+  colorFilter: ColorFilter?,
+) {
+  val painter = tile.painter ?: return
+  withTransform(
+    transformBlock = {
+      translate(
+        left = tile.bounds.topLeft.x.toFloat(),
+        top = tile.bounds.topLeft.y.toFloat(),
+      )
+    },
+    drawBlock = {
+      with(painter) {
+        draw(
+          size = tile.bounds.size.toSize(),
+          alpha = alpha,
+          colorFilter = colorFilter,
+        )
+      }
+    }
   )
 }
 
 @Stable
-private fun Modifier.contentDescription(contentDescription: String?): Modifier {
-  if (contentDescription != null) {
-    return semantics {
+internal fun Modifier.contentDescription(contentDescription: String?): Modifier {
+  return if (contentDescription != null) {
+    semantics {
       this.contentDescription = contentDescription
       this.role = Role.Image
     }
   } else {
-    return this
+    this
   }
 }
 
@@ -102,21 +130,20 @@ private fun Modifier.wrapContentSizeIfNeeded(imageSize: IntSize?): Modifier {
   if (imageSize == null) {
     return this
   }
-
   return layout { measurable, constraints ->
-    val constraints = if (!constraints.hasFixedSize) {
+    val constraints = if (constraints.hasFixedWidth && constraints.hasFixedHeight) {
+      constraints
+    } else {
       val scaleToFitImage = minOf(
         constraints.maxWidth / imageSize.width.toFloat(),
         constraints.maxHeight / imageSize.height.toFloat()
       ).coerceAtMost(1f)
       constraints.constrain(
-        Constraints(
-          minWidth = (scaleToFitImage * imageSize.width).toCeilInt(),
-          minHeight = (scaleToFitImage * imageSize.height).toCeilInt()
+        Constraints.fixed(
+          width = (scaleToFitImage * imageSize.width).toCeilInt(),
+          height = (scaleToFitImage * imageSize.height).toCeilInt(),
         )
       )
-    } else {
-      constraints
     }
     val placeable = measurable.measure(constraints)
     layout(width = placeable.width, height = placeable.height) {
@@ -125,6 +152,21 @@ private fun Modifier.wrapContentSizeIfNeeded(imageSize: IntSize?): Modifier {
   }
 }
 
-@Stable
-private val Constraints.hasFixedSize
-  get() = hasFixedWidth && hasFixedHeight
+@SuppressLint("ComposeParameterOrder")
+@Deprecated("Kept for binary compatibility", level = DeprecationLevel.HIDDEN)  // For binary compatibility.
+@Composable
+fun SubSamplingImage(
+  state: SubSamplingImageState,
+  modifier: Modifier = Modifier,
+  contentDescription: String?,
+  alpha: Float = DefaultAlpha,
+  colorFilter: ColorFilter? = null,
+) {
+  SubSamplingImage(
+    state,
+    contentDescription,
+    modifier,
+    alpha,
+    colorFilter
+  )
+}

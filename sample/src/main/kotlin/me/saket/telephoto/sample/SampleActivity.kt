@@ -23,23 +23,14 @@ import coil.decode.ImageDecoderDecoder
 import com.google.accompanist.systemuicontroller.rememberSystemUiController
 import me.saket.telephoto.sample.gallery.MediaAlbum
 import me.saket.telephoto.sample.gallery.MediaItem
+import java.util.concurrent.Executor
 
 class SampleActivity : AppCompatActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
-    StrictMode.setThreadPolicy(
-      StrictMode.ThreadPolicy.Builder()
-        .detectAll()
-        .penaltyLog()
-        .build()
-    )
-    StrictMode.setVmPolicy(
-      StrictMode.VmPolicy.Builder()
-        .detectAll()
-        .penaltyLog() // Can't use penaltyDeath() due to https://stackoverflow.com/q/67444092.
-        .build()
-    )
-
+    if (BuildConfig.DEBUG) {
+      enableStrictMode()
+    }
     enableEdgeToEdge()
     setupImmersiveMode()
     super.onCreate(savedInstanceState)
@@ -92,6 +83,26 @@ class SampleActivity : AppCompatActivity() {
         )
       }
     }
+  }
+
+  private fun enableStrictMode() {
+    StrictMode.setThreadPolicy(
+      StrictMode.ThreadPolicy.Builder()
+        .detectAll()
+        .penaltyDeath()
+        .build()
+    )
+    StrictMode.setVmPolicy(
+      StrictMode.VmPolicy.Builder()
+        .detectLeakedClosableObjects()
+        .penaltyListener(Executor(Runnable::run)) {
+          // https://github.com/aosp-mirror/platform_frameworks_base/commit/e7ae30f76788bcec4457c4e0b0c9cbff2cf892f3
+          if (!it.stackTraceToString().contains("sun.nio.fs.UnixSecureDirectoryStream.finalize")) {
+            throw it
+          }
+        }
+        .build()
+    )
   }
 
   private fun setupImmersiveMode() {

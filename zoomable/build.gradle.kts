@@ -2,11 +2,11 @@ import org.jetbrains.compose.compose
 
 plugins {
   id("me.saket.android.library")
-  id("me.saket.android.library.publishing")
+  id("me.saket.library.publishing")
   id("me.saket.kotlin.multiplatform")
+  alias(libs.plugins.kotlin.parcelize)
+  alias(libs.plugins.paparazzi)
 }
-apply(plugin = "kotlin-parcelize")
-apply(plugin = "app.cash.paparazzi")
 
 kotlin {
   sourceSets {

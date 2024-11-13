@@ -1,6 +1,5 @@
 package me.saket.telephoto.zoomable.internal
 
-import androidx.annotation.RestrictTo
 import androidx.compose.runtime.RememberObserver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,11 +17,13 @@ internal abstract class RememberWorker : RememberObserver {
     scope!!.launch { work() }
   }
 
-  override fun onAbandoned() {
+  override fun onForgotten() {
     scope?.cancel()
   }
 
-  override fun onForgotten() {
-    scope?.cancel()
+  override fun onAbandoned() {
+    check(scope == null) {
+      "onRemembered() shouldn't have been called as per RememberObserver's documentation"
+    }
   }
 }
