@@ -45,7 +45,7 @@ For preventing your content from over-zooming or over-panning, `Modifier.zoomabl
 
 For richer content such as an `Image()` whose _visual_ size may not always match its layout size, `Modifier.zoomable()` will need your assistance.
 
-```kotlin hl_lines="5-7"
+```kotlin hl_lines="3-5"
 val painter = resourcePainter(R.drawable.example)
 val zoomableState = rememberZoomableState().apply {
   setContentLocation(
@@ -76,8 +76,7 @@ Modifier.zoomable(
 )
 ```
 
-The default behavior of toggling between minimum and maximum zoom levels on double-clicks can be overridden by using
-the `onDoubleClick` parameter:
+The default behavior of toggling between minimum and maximum zoom levels on double-clicks can be overridden by using the `onDoubleClick` parameter:
 
 ```kotlin
 Modifier.zoomable(
@@ -135,10 +134,10 @@ Box(
 By default, the following shortcuts are recognized. These can be customized (or disabled) by passing a
 custom `HardwareShortcutsSpec` to `rememberZoomableState()`.
 
-|           | Android            | Desktop               |
-|-----------|--------------------|-----------------------|
-| Zoom in   | `Control` + `=`    | `Meta` + `=`          |
-| Zoom out  | `Control` + `-`    | `Meta` + `-`          |
-| Pan       | Arrow keys         | Arrow keys            |
-| Extra pan | `Alt` + arrow keys | `Option` + arrow keys |
+|           | Android            | Desktop                         |
+|-----------|--------------------|---------------------------------|
+| Zoom in   | `Control` + `=`    | `Meta` + `=`, `Option` + scroll |
+| Zoom out  | `Control` + `-`    | `Meta` + `-`, `Option` + scroll |
+| Pan       | Arrow keys         | Arrow keys                      |
+| Extra pan | `Alt` + arrow keys | `Option` + arrow keys           |
 

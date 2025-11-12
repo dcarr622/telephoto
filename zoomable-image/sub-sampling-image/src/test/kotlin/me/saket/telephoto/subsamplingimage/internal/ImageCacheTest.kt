@@ -173,12 +173,10 @@ private class FakeImageRegionDecoder : ImageRegionDecoder {
   val requestedRegions = MutableSharedFlow<ImageRegionTile>()
   val decodedRegions = Channel<Painter>()
 
-  override suspend fun decodeRegion(region: ImageRegionTile): Painter {
-    requestedRegions.emit(region)
-    return decodedRegions.receive()
+  override suspend fun decodeRegion(region: IntRect, sampleSize: Int): ImageRegionDecoder.DecodeResult {
+    requestedRegions.emit(ImageRegionTile(ImageSampleSize(sampleSize), region))
+    return ImageRegionDecoder.DecodeResult(decodedRegions.receive(), hasUltraHdrContent = false)
   }
-
-  override fun close() = Unit
 }
 
 private fun fakePainter(): Painter = ColorPainter(Color.Black)

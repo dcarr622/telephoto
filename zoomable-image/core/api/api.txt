@@ -2,8 +2,11 @@
 package me.saket.telephoto.zoomable {
 
   public final class ZoomableImageKt {
-    method @Deprecated @androidx.compose.runtime.Composable public static void ZoomableImage(me.saket.telephoto.zoomable.ZoomableImageSource image, String? contentDescription, optional androidx.compose.ui.Modifier modifier, optional me.saket.telephoto.zoomable.ZoomableImageState state, optional float alpha, optional androidx.compose.ui.graphics.ColorFilter? colorFilter, optional androidx.compose.ui.Alignment alignment, optional androidx.compose.ui.layout.ContentScale contentScale, optional boolean gesturesEnabled, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,? extends kotlin.Unit>? onClick, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,? extends kotlin.Unit>? onLongClick, optional boolean clipToBounds);
-    method @androidx.compose.runtime.Composable public static void ZoomableImage(me.saket.telephoto.zoomable.ZoomableImageSource image, String? contentDescription, optional androidx.compose.ui.Modifier modifier, optional me.saket.telephoto.zoomable.ZoomableImageState state, optional float alpha, optional androidx.compose.ui.graphics.ColorFilter? colorFilter, optional androidx.compose.ui.Alignment alignment, optional androidx.compose.ui.layout.ContentScale contentScale, optional boolean gesturesEnabled, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onClick, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onLongClick, optional boolean clipToBounds, optional me.saket.telephoto.zoomable.DoubleClickToZoomListener onDoubleClick);
+    method @Deprecated @androidx.compose.runtime.Composable public static void ZoomableImage(me.saket.telephoto.zoomable.ZoomableImageSource image, String? contentDescription, optional androidx.compose.ui.Modifier modifier, optional me.saket.telephoto.zoomable.ZoomableImageState state, optional float alpha, optional androidx.compose.ui.graphics.ColorFilter? colorFilter, optional androidx.compose.ui.Alignment alignment, optional androidx.compose.ui.layout.ContentScale contentScale, optional boolean gesturesEnabled, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onClick, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onLongClick, optional boolean clipToBounds);
+    method @Deprecated @androidx.compose.runtime.Composable public static void ZoomableImage(me.saket.telephoto.zoomable.ZoomableImageSource image, String? contentDescription, optional androidx.compose.ui.Modifier modifier, optional me.saket.telephoto.zoomable.ZoomableImageState state, optional float alpha, optional androidx.compose.ui.graphics.ColorFilter? colorFilter, optional androidx.compose.ui.Alignment alignment, optional androidx.compose.ui.layout.ContentScale contentScale, optional boolean gesturesEnabled, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onClick, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onLongClick, optional boolean clipToBounds, optional me.saket.telephoto.zoomable.DoubleClickToZoomListener onDoubleClick);
+    method @Deprecated @androidx.compose.runtime.Composable public static void ZoomableImage(me.saket.telephoto.zoomable.ZoomableImageSource image, String? contentDescription, optional androidx.compose.ui.Modifier modifier, optional me.saket.telephoto.zoomable.ZoomableImageState state, optional float alpha, optional androidx.compose.ui.graphics.ColorFilter? colorFilter, optional androidx.compose.ui.Alignment alignment, optional androidx.compose.ui.layout.ContentScale contentScale, optional boolean gesturesEnabled, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onClick, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onLongClick, optional boolean clipToBounds, optional me.saket.telephoto.zoomable.DoubleClickToZoomListener onDoubleClick, optional androidx.compose.foundation.layout.PaddingValues contentPadding);
+    method @androidx.compose.runtime.Composable public static void ZoomableImage(me.saket.telephoto.zoomable.ZoomableImageSource image, String? contentDescription, optional androidx.compose.ui.Modifier modifier, optional me.saket.telephoto.zoomable.ZoomableImageState state, optional float alpha, optional androidx.compose.ui.graphics.ColorFilter? colorFilter, optional androidx.compose.ui.Alignment alignment, optional androidx.compose.ui.layout.ContentScale contentScale, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onClick, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onLongClick, optional boolean clipToBounds, optional me.saket.telephoto.zoomable.DoubleClickToZoomListener onDoubleClick, optional androidx.compose.foundation.layout.PaddingValues contentPadding);
+    method @androidx.compose.runtime.Composable public static void ZoomableImage(me.saket.telephoto.zoomable.ZoomableImageSource image, String? contentDescription, int gestures, optional androidx.compose.ui.Modifier modifier, optional me.saket.telephoto.zoomable.ZoomableImageState state, optional float alpha, optional androidx.compose.ui.graphics.ColorFilter? colorFilter, optional androidx.compose.ui.Alignment alignment, optional androidx.compose.ui.layout.ContentScale contentScale, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onClick, optional kotlin.jvm.functions.Function1<? super androidx.compose.ui.geometry.Offset,kotlin.Unit>? onLongClick, optional me.saket.telephoto.zoomable.DoubleClickToZoomListener onDoubleClick, optional boolean clipToBounds, optional androidx.compose.foundation.layout.PaddingValues contentPadding);
   }
 
   @androidx.compose.runtime.Stable public interface ZoomableImageSource {
@@ -11,7 +14,7 @@ package me.saket.telephoto.zoomable {
     field public static final me.saket.telephoto.zoomable.ZoomableImageSource.Companion Companion;
   }
 
-  public static final class ZoomableImageSource.Companion {
+  @androidx.compose.runtime.Stable public static final class ZoomableImageSource.Companion {
   }
 
   @androidx.compose.runtime.Stable public static sealed interface ZoomableImageSource.ImageDelegate {
@@ -41,11 +44,17 @@ package me.saket.telephoto.zoomable {
     property public final me.saket.telephoto.subsamplingimage.SubSamplingImageSource source;
   }
 
+  public final class ZoomableImageSourceKt {
+    method public static me.saket.telephoto.zoomable.ZoomableImageSource.ResolveResult copy(me.saket.telephoto.zoomable.ZoomableImageSource.ResolveResult, optional me.saket.telephoto.zoomable.ZoomableImageSource.ImageDelegate? delegate, optional long crossfadeDuration, optional androidx.compose.ui.graphics.painter.Painter? placeholder);
+  }
+
   @androidx.compose.runtime.Stable public final class ZoomableImageState {
     method public me.saket.telephoto.zoomable.ZoomableState getZoomableState();
     method public boolean isImageDisplayed();
+    method public boolean isImageDisplayedInFullQuality();
     method public boolean isPlaceholderDisplayed();
     property public final boolean isImageDisplayed;
+    property public final boolean isImageDisplayedInFullQuality;
     property public final boolean isPlaceholderDisplayed;
     property public final me.saket.telephoto.zoomable.ZoomableState zoomableState;
   }

@@ -2,17 +2,18 @@
 package me.saket.telephoto.flick {
 
   public final class FlickToDismissKt {
-    method @androidx.compose.runtime.Composable public static void FlickToDismiss(me.saket.telephoto.flick.FlickToDismissState state, optional androidx.compose.ui.Modifier modifier, kotlin.jvm.functions.Function1<? super androidx.compose.foundation.layout.BoxScope,kotlin.Unit> content);
+    method @androidx.compose.runtime.Composable @me.saket.telephoto.ExperimentalTelephotoApi public static void FlickToDismiss(me.saket.telephoto.flick.FlickToDismissState state, optional androidx.compose.ui.Modifier modifier, optional boolean enabled, kotlin.jvm.functions.Function1<? super androidx.compose.foundation.layout.BoxScope,kotlin.Unit> content);
+    method @Deprecated @androidx.compose.runtime.Composable @me.saket.telephoto.ExperimentalTelephotoApi public static void FlickToDismiss(me.saket.telephoto.flick.FlickToDismissState state, optional androidx.compose.ui.Modifier modifier, kotlin.jvm.functions.Function1<? super androidx.compose.foundation.layout.BoxScope,kotlin.Unit> content);
   }
 
   @androidx.compose.runtime.Stable public sealed interface FlickToDismissState {
     method public me.saket.telephoto.flick.FlickToDismissState.GestureState getGestureState();
-    method public float getOffset();
-    method @FloatRange(from=0.0, to=1.0) public float getOffsetFraction();
+    method public long getOffset();
+    method public float getOffsetFraction();
     method public float getRotationZ();
     property public abstract me.saket.telephoto.flick.FlickToDismissState.GestureState gestureState;
-    property public abstract float offset;
-    property @FloatRange(from=0.0, to=1.0) public abstract float offsetFraction;
+    property public abstract long offset;
+    property public abstract float offsetFraction;
     property public abstract float rotationZ;
   }
 
@@ -43,8 +44,19 @@ package me.saket.telephoto.flick {
     field public static final me.saket.telephoto.flick.FlickToDismissState.GestureState.Resetting INSTANCE;
   }
 
+  @dev.drewhamilton.poko.Poko public static final class FlickToDismissState.RubberBandingSpec {
+    ctor public FlickToDismissState.RubberBandingSpec(optional float resistanceFactor);
+    field public static final me.saket.telephoto.flick.FlickToDismissState.RubberBandingSpec.Companion Companion;
+  }
+
+  public static final class FlickToDismissState.RubberBandingSpec.Companion {
+    method public me.saket.telephoto.flick.FlickToDismissState.RubberBandingSpec getDisabled();
+    property public final me.saket.telephoto.flick.FlickToDismissState.RubberBandingSpec Disabled;
+  }
+
   public final class FlickToDismissStateKt {
-    method @androidx.compose.runtime.Composable public static me.saket.telephoto.flick.FlickToDismissState rememberFlickToDismissState(optional float dismissThresholdRatio, optional boolean rotateOnDrag);
+    method @Deprecated @androidx.compose.runtime.Composable public static me.saket.telephoto.flick.FlickToDismissState rememberFlickToDismissState(optional float dismissThresholdRatio, optional boolean rotateOnDrag);
+    method @androidx.compose.runtime.Composable public static me.saket.telephoto.flick.FlickToDismissState rememberFlickToDismissState(optional float dismissThresholdRatio, optional boolean rotateOnDrag, optional me.saket.telephoto.flick.FlickToDismissState.RubberBandingSpec rubberBandingSpec);
   }
 
 }

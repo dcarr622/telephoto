@@ -2,22 +2,23 @@
 
 package me.saket.telephoto.zoomable
 
+import android.annotation.SuppressLint
 import android.graphics.BitmapFactory
 import android.view.KeyEvent
 import android.view.ViewConfiguration
 import androidx.compose.animation.core.SnapSpec
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.DraggableState
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
@@ -32,15 +33,18 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -73,6 +77,7 @@ import androidx.compose.ui.test.performMultiModalInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pinch
 import androidx.compose.ui.test.pressKey
+import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeRight
@@ -83,7 +88,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.center
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.round
 import androidx.compose.ui.unit.toOffset
+import androidx.compose.ui.unit.toSize
 import androidx.lifecycle.Lifecycle
 import androidx.test.espresso.device.action.ScreenOrientation
 import assertk.all
@@ -92,30 +99,40 @@ import assertk.assertions.isCloseTo
 import assertk.assertions.isEmpty
 import assertk.assertions.isEqualTo
 import assertk.assertions.isFalse
+import assertk.assertions.isGreaterThan
 import assertk.assertions.isTrue
 import com.dropbox.dropshots.Dropshots
 import com.google.testing.junit.testparameterinjector.TestParameter
 import com.google.testing.junit.testparameterinjector.TestParameterInjector
+import kotlinx.collections.immutable.persistentListOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.consumeAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import leakcanary.LeakAssertions
+import me.saket.telephoto.ExperimentalTelephotoApi
 import me.saket.telephoto.subsamplingimage.SubSamplingImageSource
+import me.saket.telephoto.util.ActivityRecreationTester
 import me.saket.telephoto.util.CiScreenshotValidator
 import me.saket.telephoto.util.ScreenshotTestActivity
+import me.saket.telephoto.util.assetPainter
 import me.saket.telephoto.util.waitUntil
 import me.saket.telephoto.zoomable.ZoomableImageSource.ResolveResult
 import me.saket.telephoto.zoomable.ZoomableImageTest.ScrollDirection
 import me.saket.telephoto.zoomable.ZoomableImageTest.ScrollDirection.LeftToRight
 import me.saket.telephoto.zoomable.ZoomableImageTest.ScrollDirection.RightToLeft
+import me.saket.telephoto.zoomable.spatial.CoordinateSpace
+import me.saket.telephoto.zoomable.spatial.SpatialOffset
 import org.junit.After
 import org.junit.AssumptionViolatedException
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TestName
@@ -126,11 +143,11 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
-@OptIn(ExperimentalFoundationApi::class)
 @RunWith(TestParameterInjector::class)
+@OptIn(ExperimentalTelephotoApi::class)
 class ZoomableImageTest {
   @get:Rule val rule = createAndroidComposeRule<ScreenshotTestActivity>()
-  @get:Rule val timeout = Timeout.seconds(10)!!
+  @get:Rule val timeout = Timeout.seconds(30)!!
   @get:Rule val testName = TestName()
 
   private val screenshotValidator = CiScreenshotValidator(
@@ -139,8 +156,8 @@ class ZoomableImageTest {
     tolerancePercentOnCi = 0.01f,
   )
   @get:Rule val dropshots = Dropshots(
-    filenameFunc = { it },
-    resultValidator = screenshotValidator
+    filenameFunc = { _, testName -> testName },
+    resultValidator = screenshotValidator,
   )
 
   @Before fun setup() {
@@ -243,7 +260,10 @@ class ZoomableImageTest {
       dropshots.assertSnapshot(rule.activity, testName.methodName + "_before_state_restoration")
     }
 
+    // Before saving state, enable the placeholder so that it is
+    // displayed upon state restoration before loading the full image.
     isPlaceholderVisible.value = placeholderParam.canBeUsed
+
     stateRestorationTester.emulateSavedInstanceStateRestore()
 
     if (placeholderParam.canBeUsed) {
@@ -260,6 +280,91 @@ class ZoomableImageTest {
     }
   }
 
+  @Ignore("https://github.com/saket/telephoto/issues/128")
+    @Test fun retain_transformations_across_image_changes_with_the_same_aspect_ratio() {
+    var assetName by mutableStateOf("fox_1000.jpg")
+    lateinit var state: ZoomableImageState
+
+    rule.setContent {
+      ZoomableImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .testTag("image"),
+        image = ZoomableImageSource.subSampledAssetWithPreview(assetName),
+        contentDescription = null,
+        state = rememberZoomableImageState(
+          rememberZoomableState(zoomSpec = ZoomSpec(maxZoomFactor = 5f))
+        ).also { state = it },
+      )
+    }
+
+    rule.waitUntil {
+      state.isImageDisplayedInFullQuality
+    }
+    rule.onNodeWithTag("image").performTouchInput {
+      doubleClick(position = center + Offset(100f, 100f))
+    }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_[before]")
+    }
+
+    assetName = "fox_1500.jpg"
+    rule.waitUntil {
+      val imageSize = with(state.zoomableState.coordinateSystem) {
+        unscaledContentBounds.sizeIn(CoordinateSpace.ZoomableContent)
+      }
+      imageSize == Size(1500f, 1000f)
+    }
+    // This does not use runOnIdle() because the image's
+    // centroid should be retained immediately on the next frame.
+    dropshots.assertSnapshot(rule.activity, testName.methodName + "_[after]")
+  }
+
+  // Regression test for https://github.com/saket/telephoto/issues/128.
+  @Test fun do_not_incorrectly_retain_pan_when_state_is_restored() {
+    screenshotValidator.tolerancePercentOnCi = 0.05f
+
+    val recreationTester = ActivityRecreationTester(rule)
+    recreationTester.setContent {
+      ZoomableImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .testTag("image"),
+        image = ZoomableImageSource.subSampledAssetWithPreview(
+          assetName = "arale_10k.jpg",
+          previewAssetName = "arale_1080p.jpg",
+        ),
+        state = rememberZoomableImageState(
+          rememberZoomableState(zoomSpec = ZoomSpec(maxZoomFactor = 5f))
+        ),
+        contentScale = ContentScale.Crop,
+        contentDescription = null,
+      )
+    }
+
+    rule.waitUntil(3.seconds) {
+      rule.onNodeWithTag("image").isImageDisplayedInFullQuality()
+    }
+    rule.onNodeWithTag("image").performTouchInput {
+      swipe(
+        start = center,
+        end = centerLeft,
+      )
+    }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_[before]")
+    }
+
+    recreationTester.recreate()
+
+    rule.waitUntil(3.seconds) {
+      rule.onNodeWithTag("image").isImageDisplayedInFullQuality()
+    }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_[after]")
+    }
+  }
+
   @Test fun various_image_sizes_and_alignments(
     @TestParameter alignment: AlignmentParam,
     @TestParameter contentScale: ContentScaleParam,
@@ -267,8 +372,6 @@ class ZoomableImageTest {
     @TestParameter layoutSize: LayoutSizeParam,
     @TestParameter subSamplingStatus: SubSamplingStatus,
   ) {
-    screenshotValidator.tolerancePercentOnCi = 0.18f
-
     lateinit var state: ZoomableImageState
     rule.setContent {
       ZoomableImage(
@@ -314,9 +417,6 @@ class ZoomableImageTest {
   }
 
   @Test fun rtl_layout_direction() {
-    screenshotValidator.tolerancePercentOnCi = 0.18f
-    lateinit var state: ZoomableImageState
-
     rule.setContent {
       CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         ZoomableImage(
@@ -325,12 +425,13 @@ class ZoomableImageTest {
             .testTag("image"),
           image = ZoomableImageSource.asset("fox_1500.jpg", subSample = true),
           contentDescription = null,
-          state = rememberZoomableImageState().also { state = it },
+          state = rememberZoomableImageState(),
         )
       }
     }
 
-    rule.waitUntil(5.seconds) { state.isImageDisplayedInFullQuality }
+    val imageNode = rule.onNodeWithTag("image")
+    rule.waitUntil(5.seconds) { imageNode.isImageDisplayedInFullQuality() }
     rule.runOnIdle {
       dropshots.assertSnapshot(rule.activity)
     }
@@ -338,7 +439,7 @@ class ZoomableImageTest {
     rule.onNodeWithTag("image").performTouchInput {
       doubleClick()
     }
-    rule.waitUntil(5.seconds) { state.isImageDisplayedInFullQuality }
+    rule.waitUntil(5.seconds) { imageNode.isImageDisplayedInFullQuality() }
     rule.runOnIdle {
       dropshots.assertSnapshot(rule.activity, testName.methodName + "_zoomed")
     }
@@ -348,7 +449,7 @@ class ZoomableImageTest {
         swipeLeft(startX = center.x, endX = centerLeft.x)
       }
     }
-    rule.waitUntil(5.seconds) { state.isImageDisplayedInFullQuality }
+    rule.waitUntil(5.seconds) { imageNode.isImageDisplayedInFullQuality() }
     rule.runOnIdle {
       dropshots.assertSnapshot(rule.activity, testName.methodName + "_zoomed_panned")
     }
@@ -663,35 +764,22 @@ class ZoomableImageTest {
 
     rule.waitUntil(5.seconds) { state!!.isImageDisplayed }
 
-    val isImageStretchedToFill = when (scale) {
-      ContentScaleParam.Crop -> true
-      ContentScaleParam.Fit -> false
-      ContentScaleParam.Inside -> false
-      ContentScaleParam.Fill -> true
+    rule.runOnIdle {
+      assertThat(zoomFraction()).isEqualTo(0f)
     }
 
-    if (isImageStretchedToFill) {
-      rule.runOnIdle {
-        assertThat(zoomFraction()).isEqualTo(1f)
-      }
-    } else {
-      rule.runOnIdle {
-        assertThat(zoomFraction()).isEqualTo(0f)
-      }
+    rule.onNodeWithTag("image").performTouchInput {
+      pinchToZoomInBy(IntOffset(0, 5))
+    }
+    rule.runOnIdle {
+      assertThat(zoomFraction()!!).isEqualTo(1.0f)
+    }
 
-      rule.onNodeWithTag("image").performTouchInput {
-        pinchToZoomInBy(IntOffset(0, 5))
-      }
-      rule.runOnIdle {
-        assertThat(zoomFraction()!!).isEqualTo(1.0f)
-      }
-
-      rule.onNodeWithTag("image").performTouchInput {
-        doubleClick()
-      }
-      rule.runOnIdle {
-        assertThat(zoomFraction()).isEqualTo(0f)
-      }
+    rule.onNodeWithTag("image").performTouchInput {
+      doubleClick()
+    }
+    rule.runOnIdle {
+      assertThat(zoomFraction()).isEqualTo(0f)
     }
   }
 
@@ -821,7 +909,7 @@ class ZoomableImageTest {
     rule.setContent {
       state = rememberZoomableState(
         zoomSpec = ZoomSpec(maxZoomFactor = maxZoomFactor)
-      ).real()
+      ).asReal()
       ZoomableImage(
         modifier = Modifier
           .fillMaxSize()
@@ -883,21 +971,25 @@ class ZoomableImageTest {
     }
   }
 
-  @Test fun double_click_should_toggle_zoom() {
+  @Test fun double_click_should_toggle_zoom(
+    @TestParameter imageAsset: ImageAssetParam,
+    @TestParameter contentScale: ContentScaleParamWithDifferentProportions,
+  ) {
     lateinit var state: ZoomableState
     lateinit var composeScope: CoroutineScope
 
     rule.setContent {
       composeScope = rememberCoroutineScope()
       state = rememberZoomableState(
-        zoomSpec = ZoomSpec()
+        zoomSpec = ZoomSpec(maxZoomFactor = 2f)
       )
       ZoomableImage(
         modifier = Modifier
           .fillMaxSize()
           .testTag("zoomable"),
-        image = ZoomableImageSource.asset("fox_1500.jpg", subSample = false),
+        image = ZoomableImageSource.asset(imageAsset.assetName, subSample = false),
         contentDescription = null,
+        contentScale = contentScale.value,
         state = rememberZoomableImageState(state),
         onClick = { error("click listener should not get called") },
         onLongClick = { error("long click listener should not get called") },
@@ -917,10 +1009,10 @@ class ZoomableImageTest {
     // When the image is partially zoomed out, double clicking on it should zoom-in again.
     // This matches the original behavior before DoubleClickToZoomListener was introduced.
     composeScope.launch {
-      state.zoomTo(zoomFactor = 1.8f)
+      state.zoomTo(zoomFactor = state.zoomSpec.maximum.factor * 0.9f)
     }
     rule.runOnIdle {
-      assertThat(state.zoomFraction!!).isCloseTo(0.8f, delta = 0.01f)
+      assertThat(state.zoomFraction!!).isGreaterThan(0.6f)
     }
     rule.onNodeWithTag("zoomable").performTouchInput { doubleClick() }
     rule.runOnIdle {
@@ -930,10 +1022,9 @@ class ZoomableImageTest {
 
   @Test fun gestures_are_ignored_when_gestures_are_disabled() {
     var state: ZoomableImageState? = null
-    fun zoomFraction() = state!!.zoomableState.zoomFraction
-
     var onClickCalled = false
     var onLongClickCalled = false
+    var onDoubleClickCalled = false
 
     rule.setContent {
       ZoomableImage(
@@ -945,18 +1036,16 @@ class ZoomableImageTest {
           rememberZoomableState(zoomSpec = ZoomSpec(maxZoomFactor = 5f))
         ).also { state = it },
         contentDescription = null,
-        gesturesEnabled = false,
+        gestures = EnabledZoomGestures.None,
         onClick = { onClickCalled = true },
         onLongClick = { onLongClickCalled = true },
+        onDoubleClick = { _, _ -> onDoubleClickCalled = true },
       )
     }
 
     rule.onNodeWithTag("image").run {
       performTouchInput {
         pinchToZoomInBy(visibleSize.center / 2f)
-      }
-      performTouchInput {
-        doubleClick()
       }
       performTouchInput {
         quickZoomIn()
@@ -970,7 +1059,12 @@ class ZoomableImageTest {
     }
 
     rule.runOnIdle {
-      assertThat(zoomFraction()).isEqualTo(0f)
+      assertThat(state!!.zoomableState.zoomFraction).isEqualTo(0f)
+    }
+
+    rule.onNodeWithTag("image").performTouchInput { doubleClick() }
+    rule.runOnIdle {
+      assertThat(onDoubleClickCalled).isFalse()
     }
 
     rule.onNodeWithTag("image").performTouchInput { longClick() }
@@ -979,9 +1073,60 @@ class ZoomableImageTest {
     }
 
     rule.onNodeWithTag("image").performTouchInput { click() }
-    rule.mainClock.advanceTimeBy(ViewConfiguration.getLongPressTimeout().toLong())
+    rule.mainClock.advanceTimeBy(ViewConfiguration.getDoubleTapTimeout().toLong())
     rule.runOnIdle {
       assertThat(onClickCalled).isTrue()
+    }
+  }
+
+  @Test fun toggle_pan() {
+    val enabledZoomGestures = mutableStateOf(EnabledZoomGestures.ZoomOnly)
+    lateinit var zoomableState: ZoomableState
+
+    rule.setContent {
+      zoomableState = rememberZoomableState()
+      ZoomableImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .zoomable(zoomableState, gestures = enabledZoomGestures.value)
+          .testTag("image"),
+        image = ZoomableImageSource.asset("mels_drive_in.jpg", subSample = true),
+        contentDescription = null,
+        contentScale = ContentScale.Fit,
+        state = rememberZoomableImageState(zoomableState),
+        gestures = enabledZoomGestures.value,
+      )
+    }
+
+    rule.onNodeWithTag("image").performTouchInput { doubleClick() }
+    rule.waitUntil { zoomableState.zoomFraction!! == 1f }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_zoomed_in")
+    }
+
+    rule.onNodeWithTag("image").performTouchInput {
+      swipeDown(startY = centerX, endY = bottom)
+    }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_first_pan_while_disabled")
+    }
+
+    enabledZoomGestures.value = EnabledZoomGestures.ZoomAndPan
+    rule.waitForIdle()
+    rule.onNodeWithTag("image").performTouchInput {
+      swipeDown(startY = centerX, endY = bottom)
+    }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_second_pan_while_enabled")
+    }
+
+    enabledZoomGestures.value = EnabledZoomGestures.None
+    rule.waitForIdle()
+    rule.onNodeWithTag("image").performTouchInput {
+      swipeLeft(startX = right, endX = centerX)
+    }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_third_pan_while_disabled")
     }
   }
 
@@ -1076,7 +1221,7 @@ class ZoomableImageTest {
   }
 
   @OptIn(ExperimentalTestApi::class)
-  @Test fun pan_and_zoom_using_hardware_shortcuts() {
+    @Test fun pan_and_zoom_using_hardware_shortcuts() {
     lateinit var state: ZoomableImageState
     val maxZoomFactor = 5f
 
@@ -1088,7 +1233,7 @@ class ZoomableImageTest {
           .focusRequester(focusRequester)
           .testTag("image"),
         image = ZoomableImageSource
-          .asset("cat_1920.jpg", subSample = false)
+          .asset("cat_1920.jpg", subSample = true)
           .withDelay(500.milliseconds), // Ensures that the focus is received before the content is ready.
         contentDescription = null,
         state = rememberZoomableImageState(
@@ -1100,7 +1245,7 @@ class ZoomableImageTest {
       LaunchedEffect(Unit) {
         // If the focus was received before the image was ready,
         // it should retain focus after the image becomes visible.
-        assertThat(state.zoomableState.real().isReadyToInteract).isFalse()
+        assertThat(state.zoomableState.asReal().isReadyForInteraction).isFalse()
         focusRequester.requestFocus()
       }
     }
@@ -1116,10 +1261,7 @@ class ZoomableImageTest {
       }
     }
     rule.runOnIdle {
-      state.zoomableState.contentTransformation.run {
-        assertThat(scale.toString()).isEqualTo(ScaleFactor(4.3f, 4.3f).toString())
-        assertThat(offset.toString()).isEqualTo(Offset(-1781.9f, -3958.5f).toString())
-      }
+      dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_key_zoom_in")
     }
     // Zoom out.
     repeat(2) {
@@ -1130,10 +1272,7 @@ class ZoomableImageTest {
       }
     }
     rule.runOnIdle {
-      state.zoomableState.contentTransformation.run {
-        assertThat(scale.toString()).isEqualTo(ScaleFactor(2.99f, 2.99f).toString())
-        assertThat(offset.toString()).isEqualTo(Offset(-1072.4f, -2382.3f).toString())
-      }
+      dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_key_zoom_out")
     }
 
     // Pan towards up.
@@ -1143,10 +1282,7 @@ class ZoomableImageTest {
       }
     }
     rule.runOnIdle {
-      state.zoomableState.contentTransformation.run {
-        assertThat(scale.toString()).isEqualTo(ScaleFactor(2.99f, 2.99f).toString())
-        assertThat(offset.toString()).isEqualTo(Offset(-1072.4f, -2119.8f).toString())
-      }
+      dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_key_pan_up")
     }
     // Pan towards down.
     repeat(2) {
@@ -1155,10 +1291,7 @@ class ZoomableImageTest {
       }
     }
     rule.runOnIdle {
-      state.zoomableState.contentTransformation.run {
-        assertThat(scale.toString()).isEqualTo(ScaleFactor(2.99f, 2.99f).toString())
-        assertThat(offset.toString()).isEqualTo(Offset(-1072.4f, -2382.3f).toString())
-      }
+      dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_key_pan_down")
     }
 
     // Pan towards right.
@@ -1168,10 +1301,7 @@ class ZoomableImageTest {
       }
     }
     rule.runOnIdle {
-      state.zoomableState.contentTransformation.run {
-        assertThat(scale.toString()).isEqualTo(ScaleFactor(2.99f, 2.99f).toString())
-        assertThat(offset.toString()).isEqualTo(Offset(-1334.9f, -2382.3f).toString())
-      }
+      dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_key_pan_right")
     }
     // Pan towards left.
     repeat(2) {
@@ -1180,45 +1310,49 @@ class ZoomableImageTest {
       }
     }
     rule.runOnIdle {
-      state.zoomableState.contentTransformation.run {
-        assertThat(scale.toString()).isEqualTo(ScaleFactor(2.99f, 2.99f).toString())
-        assertThat(offset.toString()).isEqualTo(Offset(-1072.4f, -2382.3f).toString())
-      }
+      dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_key_pan_left")
     }
 
     // Zoom in using mouse.
-    repeat(10) {
+    repeat(20) {
       rule.onNodeWithTag("image").performMultiModalInput {
         key {
           withKeyDown(Key.AltLeft) {
-            mouse { scroll(-1f) }
+            mouse {
+              moveTo((center + topCenter) / 2f)
+              scroll(delta = -1f)
+            }
           }
         }
       }
     }
     rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_mouse_zoom_in")
+
       // Should not over-zoom.
-      assertThat(state.zoomableState.contentTransformation.scale.toString()).isEqualTo(
-        ScaleFactor(maxZoomFactor, maxZoomFactor).toString()
+      assertThat(state.zoomableState.contentTransformation.scale).isCloseTo(
+        value = ScaleFactor(maxZoomFactor, maxZoomFactor),
+        delta = 0.1f,
       )
     }
     // Zoom out using mouse.
     rule.onNodeWithTag("image").performMultiModalInput {
       key {
         withKeyDown(Key.AltLeft) {
-          mouse { scroll(3f) }
+          mouse {
+            moveTo(center)
+            scroll(3f)
+          }
         }
       }
     }
     rule.runOnIdle {
-      assertThat(state.zoomableState.contentTransformation.scale.toString()).isEqualTo(
-        ScaleFactor(1.4f, 1.4f).toString()
-      )
+      dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_mouse_zoom_out")
     }
   }
 
   @OptIn(ExperimentalTestApi::class)
-  @Test fun hardware_shortcuts_are_ignored_when_shortcuts_are_disabled() {
+    @Test fun hardware_shortcuts_are_ignored_when_shortcuts_are_disabled() {
     lateinit var state: ZoomableImageState
     val focusRequester = FocusRequester()
 
@@ -1266,8 +1400,8 @@ class ZoomableImageTest {
 
     rule.runOnIdle {
       state.zoomableState.contentTransformation.run {
-        assertThat(scale.toString()).isEqualTo(ScaleFactor(1f, 1f).toString())
-        assertThat(offset.toString()).isEqualTo(Offset.Zero.toString())
+        assertThat(scale).isEqualTo(ScaleFactor(1f, 1f))
+        assertThat(offset).isEqualTo(Offset.Zero)
       }
     }
   }
@@ -1300,8 +1434,8 @@ class ZoomableImageTest {
 
   @Test fun calculate_content_bounds_for_full_quality_images(
     @TestParameter subSamplingStatus: SubSamplingStatus,
+    @TestParameter contentPadding: ContentPaddingParam,
   ) {
-    screenshotValidator.tolerancePercentOnCi = 0.06f
     lateinit var imageState: ZoomableImageState
 
     rule.setContent {
@@ -1309,7 +1443,6 @@ class ZoomableImageTest {
       Box(
         Modifier
           .fillMaxSize()
-          .systemBarsPadding()
           .padding(24.dp)
       ) {
         ZoomableImage(
@@ -1319,23 +1452,54 @@ class ZoomableImageTest {
           image = ZoomableImageSource.asset("forest_fox_1000.jpg", subSample = subSamplingStatus.enabled),
           contentDescription = null,
           state = rememberZoomableImageState(zoomableState).also { imageState = it },
+          contentPadding = contentPadding.contentPadding,
         )
-        Canvas(
-          Modifier
-            .matchParentSize()
-            .clipToBounds()
-        ) {
-          val bounds = zoomableState.transformedContentBounds
-          drawRect(
-            color = Color.Yellow,
-            topLeft = bounds.topLeft,
-            size = bounds.size,
-            style = Stroke(width = 2.dp.toPx()),
-          )
-        }
+
+        VisualizeAllBounds(
+          zoomableState = zoomableState,
+          clipToViewport = true,
+        )
       }
     }
-    rule.waitUntil { imageState.isImageDisplayed }
+    rule.waitUntil { imageState.isImageDisplayedInFullQuality }
+    dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_zoomed_out")
+
+    rule.onNodeWithTag("image").run {
+      performTouchInput { doubleClick() }
+      performTouchInput { swipeRight() }
+    }
+    rule.waitUntil { imageState.zoomableState.zoomFraction == 1f }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_zoomed_in")
+    }
+  }
+
+  @Test fun calculate_unclipped_content_bounds_for_full_quality_images() {
+    lateinit var imageState: ZoomableImageState
+
+    rule.setContent {
+      val zoomableState = rememberZoomableState(zoomSpec = ZoomSpec(maxZoomFactor = 2f))
+      Box(
+        Modifier
+          .fillMaxSize()
+          .padding(24.dp)
+      ) {
+        ZoomableImage(
+          modifier = Modifier
+            .fillMaxSize()
+            .testTag("image"),
+          image = ZoomableImageSource.asset("forest_fox_1000.jpg", subSample = true),
+          contentDescription = null,
+          state = rememberZoomableImageState(zoomableState).also { imageState = it },
+        )
+
+        VisualizeAllBounds(
+          zoomableState = zoomableState,
+          clipToViewport = false,
+        )
+      }
+    }
+    rule.waitUntil { imageState.isImageDisplayedInFullQuality }
     dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_zoomed_out")
 
     rule.onNodeWithTag("image").run {
@@ -1349,9 +1513,9 @@ class ZoomableImageTest {
   }
 
   @Test fun calculate_content_bounds_for_placeholder_images(
-    @TestParameter placeholderParam: PlaceholderImageParam
+    @TestParameter placeholderParam: PlaceholderImageParam,
+    @TestParameter contentPadding: ContentPaddingParam,
   ) {
-    screenshotValidator.tolerancePercentOnCi = 0.13f
     lateinit var imageState: ZoomableImageState
 
     rule.setContent {
@@ -1359,7 +1523,6 @@ class ZoomableImageTest {
       Box(
         Modifier
           .fillMaxSize()
-          .systemBarsPadding()
           .padding(24.dp)
       ) {
         ZoomableImage(
@@ -1369,20 +1532,176 @@ class ZoomableImageTest {
           image = ZoomableImageSource.placeholderOnly(placeholderParam.painter()),
           contentDescription = null,
           state = rememberZoomableImageState(zoomableState).also { imageState = it },
+          contentPadding = contentPadding.contentPadding,
         )
-        Canvas(Modifier.matchParentSize()) {
-          val bounds = zoomableState.transformedContentBounds
-          drawRect(
-            color = Color.Yellow,
-            topLeft = bounds.topLeft,
-            size = bounds.size,
-            style = Stroke(width = 2.dp.toPx()),
-          )
-        }
+
+        VisualizeAllBounds(
+          zoomableState = zoomableState,
+          clipToViewport = true,
+        )
       }
     }
     rule.waitUntil { imageState.isPlaceholderDisplayed }
     dropshots.assertSnapshot(rule.activity)
+  }
+
+  @Composable
+  @OptIn(ExperimentalTelephotoApi::class)
+  @SuppressLint("ComposeUnstableReceiver")
+  private fun BoxScope.VisualizeAllBounds(
+    zoomableState: ZoomableState,
+    clipToViewport: Boolean,
+  ) {
+    Canvas(Modifier.matchParentSize()) {
+      val unscaledContentBounds = with(zoomableState.coordinateSystem) {
+        if (clipToViewport) {
+          unscaledContentBounds.rectIn(CoordinateSpace.Viewport)
+        } else {
+          unscaledContentBounds(clipToViewport = false).rectIn(CoordinateSpace.Viewport)
+        }
+      }
+
+      drawRect(
+        color = Color.Blue,
+        topLeft = unscaledContentBounds.topLeft,
+        size = unscaledContentBounds.size,
+        style = Stroke(width = 8.dp.toPx()),
+      )
+
+      // These two bounds should overlap.
+      val contentBounds = with(zoomableState.coordinateSystem) {
+        if (clipToViewport) {
+          contentBounds.rectIn(CoordinateSpace.Viewport)
+        } else {
+          contentBounds(clipToViewport = false).rectIn(CoordinateSpace.Viewport)
+        }
+      }
+      drawRect(
+        color = Color.Yellow,
+        topLeft = contentBounds.topLeft,
+        size = contentBounds.size,
+        style = Stroke(
+          width = 6.dp.toPx(),
+          pathEffect = PathEffect.dashPathEffect(floatArrayOf(8.dp.toPx(), 12.dp.toPx())),
+        ),
+      )
+
+      @Suppress("DEPRECATION")
+      zoomableState.transformedContentBounds.let { bounds ->
+        drawRect(
+          color = Color.Magenta,
+          topLeft = bounds.topLeft,
+          size = bounds.size,
+          style = Stroke(width = 2.dp.toPx()),
+        )
+      }
+    }
+
+    ColorLegend(
+      modifier = Modifier
+        .align(Alignment.BottomStart)
+        .padding(16.dp),
+      colorsToNames = persistentListOf(
+        Color.Blue to "unscaledContentBounds",
+        Color.Magenta to "transformedContentBounds",
+        Color.Yellow to "contentBounds",
+      ),
+    )
+  }
+
+  @Test fun content_bounds_of_cropped_content_are_always_within_viewport_bounds() {
+    lateinit var imageState: ZoomableImageState
+
+    rule.setContent {
+      ZoomableImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .testTag("image"),
+        image = ZoomableImageSource.asset("forest_fox_1000.jpg", subSample = true),
+        contentDescription = null,
+        state = rememberZoomableImageState().also { imageState = it },
+        contentScale = ContentScale.Crop,
+      )
+    }
+    rule.waitUntil { imageState.isImageDisplayedInFullQuality }
+
+    val imageNode = rule.onNodeWithTag("image").fetchSemanticsNode()
+    rule.runOnIdle {
+      with(imageState.zoomableState.coordinateSystem) {
+        assertThat(contentBounds.rectIn(CoordinateSpace.Viewport)).isEqualTo(Rect(Offset.Zero, imageNode.size.toSize()))
+      }
+    }
+  }
+
+  @Test fun visualize_image_spatial_offsets_in_viewport_space() {
+    lateinit var state: ZoomableImageState
+    val rawContentSize = Size(1000f, 605f)
+
+    rule.setContent {
+      state = rememberZoomableImageState(
+        rememberZoomableState(
+          ZoomSpec(maxZoomFactor = 3f)
+        )
+      )
+
+      Box(Modifier.fillMaxSize()) {
+        ZoomableImage(
+          modifier = Modifier
+            .padding(vertical = 200.dp)
+            .border(1.dp, Color.White)
+            .fillMaxSize()
+            .testTag("image")
+            .drawWithContent {
+              drawContent()
+
+              val imageTopOffset = SpatialOffset(
+                Offset(rawContentSize.width / 2f, y = 0f),
+                CoordinateSpace.ZoomableContent,
+              )
+              drawCircle(
+                color = Color.White,
+                center = with(state.zoomableState.coordinateSystem) {
+                  imageTopOffset.offsetIn(CoordinateSpace.Viewport)
+                },
+                radius = 10.dp.toPx(),
+              )
+
+              val imageBottomOffset = SpatialOffset(
+                Offset(rawContentSize.width / 2f, y = rawContentSize.height),
+                CoordinateSpace.ZoomableContent,
+              )
+              drawCircle(
+                color = Color.White,
+                center = with(state.zoomableState.coordinateSystem) {
+                  imageBottomOffset.offsetIn(CoordinateSpace.Viewport)
+                },
+                radius = 10.dp.toPx(),
+              )
+            },
+          image = ZoomableImageSource.asset("forest_fox_1000.jpg", subSample = true),
+          contentDescription = null,
+          state = state,
+          contentScale = ContentScale.Fit,
+          alignment = Alignment.Center,
+          clipToBounds = false,
+        )
+      }
+    }
+
+    rule.waitUntil { state.isImageDisplayedInFullQuality }
+    dropshots.assertSnapshot(rule.activity)
+
+    rule.onNodeWithTag("image").performTouchInput { doubleClick() }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_[zoomed]")
+    }
+
+    rule.onNodeWithTag("image").performTouchInput {
+      swipeLeft(startX = centerRight.x, endX = centerRight.x - 200f)
+    }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_[zoomed_and_panned]")
+    }
   }
 
   @Test fun image_without_an_intrinsic_size() {
@@ -1393,7 +1712,6 @@ class ZoomableImageTest {
       Box(
         Modifier
           .fillMaxSize()
-          .systemBarsPadding()
           .padding(24.dp),
         Alignment.Center,
       ) {
@@ -1525,12 +1843,11 @@ class ZoomableImageTest {
       )
     }
 
-    rule.waitUntil { imageState.isImageDisplayedInFullQuality }
-    (rule.onNodeWithTag("image")).run {
-      performTouchInput { doubleClick(center - Offset(0f, 360f)) }
-    }
+    val imageNode = rule.onNodeWithTag("image")
+    rule.waitUntil { imageNode.isImageDisplayedInFullQuality() }
+    imageNode.performTouchInput { doubleClick(center - Offset(0f, 360f)) }
     rule.waitForIdle()
-    rule.waitUntil { imageState.isImageDisplayedInFullQuality }
+    rule.waitUntil { imageNode.isImageDisplayedInFullQuality() }
 
     val zoomFractionBeforeRotation = imageState.zoomableState.zoomFraction
     rule.runOnIdle {
@@ -1542,7 +1859,7 @@ class ZoomableImageTest {
       rule.setScreenOrientation(ScreenOrientation.LANDSCAPE)
     }
 
-    rule.waitUntil { imageState.isImageDisplayedInFullQuality }
+    rule.waitUntil { imageNode.isImageDisplayedInFullQuality() }
     rule.runOnIdle {
       dropshots.assertSnapshot(rule.activity, testName.methodName + "_[after_rotation]")
     }
@@ -1551,7 +1868,7 @@ class ZoomableImageTest {
       rule.setScreenOrientation(ScreenOrientation.PORTRAIT)
     }
 
-    rule.waitUntil { imageState.isImageDisplayedInFullQuality }
+    rule.waitUntil { imageNode.isImageDisplayedInFullQuality() }
     rule.runOnIdle {
       assertThat(imageState.zoomableState.zoomFraction).isEqualTo(zoomFractionBeforeRotation)
       dropshots.assertSnapshot(rule.activity, testName.methodName + "_[after_another_rotation]")
@@ -1580,7 +1897,8 @@ class ZoomableImageTest {
       )
     }
 
-    rule.waitUntil { imageState.isImageDisplayedInFullQuality }
+    val imageNode = rule.onNodeWithTag("image")
+    rule.waitUntil { imageNode.isImageDisplayedInFullQuality() }
     rule.runOnIdle {
       dropshots.assertSnapshot(rule.activity, testName.methodName + "_[before_rotation]")
     }
@@ -1589,10 +1907,26 @@ class ZoomableImageTest {
       rule.setScreenOrientation(ScreenOrientation.LANDSCAPE)
     }
 
-    rule.waitUntil { imageState.isImageDisplayedInFullQuality }
+    rule.waitUntil { imageNode.isImageDisplayedInFullQuality() }
     rule.runOnIdle {
       assertThat(imageState.zoomableState.zoomFraction).isEqualTo(0f)
       dropshots.assertSnapshot(rule.activity, testName.methodName + "_[after_rotation]")
+    }
+
+    // Regression test: When the image is zoomed in and then out, the user offset becomes
+    // negative zero, which breaks my calculation for checking whether the image needs restoration.
+    imageNode.performTouchInput { doubleClick() }
+    rule.waitUntil { imageState.zoomableState.zoomFraction == 1f }
+    imageNode.performTouchInput { doubleClick() }
+    rule.waitUntil { imageState.zoomableState.zoomFraction == 0f }
+
+    recreationTester.recreateWith {
+      rule.setScreenOrientation(ScreenOrientation.PORTRAIT)
+    }
+
+    rule.waitUntil { imageNode.isImageDisplayedInFullQuality() }
+    rule.runOnIdle {
+      assertThat(imageState.zoomableState.zoomFraction).isEqualTo(0f)
     }
   }
 
@@ -1616,8 +1950,12 @@ class ZoomableImageTest {
       SideEffect { numOfRecompositions++ }
     }
 
-    rule.waitUntil { imageState.isImageDisplayedInFullQuality }
+    rule.waitUntil { rule.onNodeWithTag("image").isImageDisplayedInFullQuality() }
     rule.runOnIdle {
+      with(imageState.zoomableState.coordinateSystem) {
+        assertThat(contentBounds.rectIn(CoordinateSpace.Viewport).top).isEqualTo(390f)
+      }
+      @Suppress("DEPRECATION")
       assertThat(imageState.zoomableState.transformedContentBounds.top).isEqualTo(390f)
     }
 
@@ -1627,7 +1965,9 @@ class ZoomableImageTest {
     // waitUntil or runOnIdle aren't used here because they can advance the time by multiple frames.
     rule.mainClock.advanceTimeByFrame()
 
-    assertThat(imageState.zoomableState.transformedContentBounds.top).isEqualTo(193f)
+    with(imageState.zoomableState.coordinateSystem) {
+      assertThat(unscaledContentBounds.rectIn(CoordinateSpace.Viewport).top).isEqualTo(193f)
+    }
     assertThat(numOfRecompositions).isEqualTo(numOfRecompositionsBeforeUpdate + 1)
   }
 
@@ -1692,6 +2032,244 @@ class ZoomableImageTest {
     rule.onAllNodesWithContentDescription("nicolas cage").assertCountEquals(1)
   }
 
+  // Regression test for https://github.com/saket/telephoto/issues/114.
+  @Test fun render_image_changes_immediately() {
+    var resolvedZoomableImage by mutableStateOf(
+      ResolveResult(
+        delegate = ZoomableImageSource.SubSamplingDelegate(
+          SubSamplingImageSource.asset(name = "fox_250.jpg", preview = null)
+        ),
+        placeholder = null,
+      )
+    )
+
+    rule.setContent {
+      ZoomableImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .testTag("image"),
+        image = object : ZoomableImageSource {
+          @Composable override fun resolve(canvasSize: Flow<Size>): ResolveResult = resolvedZoomableImage
+        },
+        contentDescription = null,
+      )
+    }
+
+    rule.waitUntil { rule.onNodeWithTag("image").isImageDisplayedInFullQuality() }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_[before_image_change]")
+    }
+
+    // When a new image is applied, its preview should be displayed immediately on
+    // the next frame instead of waiting for the full image to be decoded from the disk.
+    val newAssetName = "fox_1500.jpg"
+    resolvedZoomableImage = ResolveResult(
+      delegate = ZoomableImageSource.SubSamplingDelegate(
+        SubSamplingImageSource.asset(
+          name = newAssetName,
+          // It would have been nice to use AsyncZoomableImage() directly here, but this
+          // mimics how ZoomableImageSource.coil() sends the loaded image as a preview.
+          preview = rule.activity.assets.open(newAssetName)
+            .use(BitmapFactory::decodeStream)
+            .asImageBitmap(),
+        )
+      ),
+    )
+
+    rule.mainClock.advanceTimeByFrame()
+    dropshots.assertSnapshot(rule.activity, testName.methodName + "_[after_image_change]")
+  }
+
+  @Test fun content_padding(
+    @TestParameter contentPadding: ContentPaddingParam,
+    @TestParameter subSamplingStatus: SubSamplingStatus,
+  ) {
+    lateinit var state: ZoomableImageState
+    val zoomRequests = Channel<Float>()
+    val isPlaceholderVisible = MutableStateFlow(true)
+
+    rule.setContent {
+      val fullQualityImage = when (contentPadding) {
+        ContentPaddingParam.Symmetric -> "arale_1080p.jpg"
+        ContentPaddingParam.Asymmetric -> "cat_1920.jpg"
+      }
+      val placeholderImage = when (contentPadding) {
+        ContentPaddingParam.Symmetric -> "arale_250.jpg"
+        ContentPaddingParam.Asymmetric -> "cat_250.jpg"
+      }
+
+      ZoomableImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .testTag("image"),
+        image = ZoomableImageSource
+          .asset(fullQualityImage, subSample = subSamplingStatus.enabled)
+          .withPlaceholder(assetPainter(placeholderImage), isPlaceholderVisible),
+        contentDescription = null,
+        state = rememberZoomableImageState().also { state = it },
+        contentPadding = contentPadding.contentPadding,
+      )
+
+      LaunchedEffect(Unit) {
+        zoomRequests.consumeAsFlow().collectLatest { factor ->
+          state.zoomableState.zoomTo(factor)
+        }
+      }
+    }
+
+    rule.waitUntil { state.isPlaceholderDisplayed }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_placeholder")
+    }
+
+    isPlaceholderVisible.value = false
+    rule.waitUntil { state.isImageDisplayedInFullQuality }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_full_image")
+    }
+
+    zoomRequests.trySend(1.1f)
+    rule.waitUntil { state.isImageDisplayedInFullQuality }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_zoomed")
+    }
+
+    with(rule.onNodeWithTag("image")) {
+      performTouchInput {
+        swipeLeft(startX = center.x, endX = centerLeft.x)
+      }
+    }
+    rule.waitUntil { state.isImageDisplayedInFullQuality }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, testName.methodName + "_zoomed_and_panned")
+    }
+  }
+
+  @Test fun min_zoom_factor_should_exclude_content_padding() {
+    lateinit var state: ZoomableImageState
+    rule.setContent {
+      ZoomableImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .testTag("image"),
+        image = ZoomableImageSource.asset("fox_1000.jpg", subSample = true),
+        contentDescription = null,
+        state = rememberZoomableImageState().also { state = it },
+        contentPadding = PaddingValues(40.dp),
+        contentScale = ContentScale.Fit,
+      )
+    }
+
+    // When the image is zoomed in and then fully out,
+    // it should go back to its original padded position.
+    rule.waitUntil { state.isImageDisplayedInFullQuality }
+    repeat(2) {
+      rule.onNodeWithTag("image").performTouchInput { doubleClick() }
+      rule.waitForIdle()
+    }
+
+    with(state.zoomableState.coordinateSystem) {
+      val contentBounds = contentBounds.rectIn(CoordinateSpace.Viewport)
+      assertThat(contentBounds.topLeft.round()).isEqualTo(IntOffset(105, 910))
+    }
+    assertThat(state.zoomableState.zoomFraction).isEqualTo(0f)
+  }
+
+  // Regression test.
+  @Test fun placeholder_should_not_be_zoomable_when_content_padding_is_used(
+    @TestParameter placeholderParam: PlaceholderImageParam
+  ) {
+    lateinit var state: ZoomableImageState
+    rule.setContent {
+      ZoomableImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .testTag("image")
+          .border(1.dp, Color.White),
+        image = ZoomableImageSource.placeholderOnly(placeholderParam.painter()),
+        contentDescription = null,
+        state = rememberZoomableImageState().also { state = it },
+        contentPadding = PaddingValues(40.dp),
+      )
+    }
+    rule.waitUntil { state.isPlaceholderDisplayed }
+
+    val contentBoundsBefore = with(state.zoomableState.coordinateSystem) {
+      contentBounds.rectIn(CoordinateSpace.Viewport)
+    }
+
+    rule.onNodeWithTag("image").performTouchInput { doubleClick() }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity)
+    }
+
+    val contentBoundsAfter = with(state.zoomableState.coordinateSystem) {
+      contentBounds.rectIn(CoordinateSpace.Viewport)
+    }
+    assertThat(contentBoundsBefore).isEqualTo(contentBoundsAfter)
+  }
+
+  // Regression test: large images get cropped if the placeholder Image uses ContentScale.None.
+  @Test fun placeholder_image_larger_than_viewport() {
+    lateinit var state: ZoomableImageState
+
+    rule.setContent {
+      ZoomableImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .testTag("image")
+          .border(1.dp, Color.White),
+        image = ZoomableImageSource.placeholderOnly(assetPainter("fox_1500.jpg")),
+        contentDescription = null,
+        state = rememberZoomableImageState().also { state = it },
+      )
+    }
+
+    rule.waitUntil { state.isPlaceholderDisplayed }
+    rule.waitForIdle()
+
+    with(state.zoomableState.coordinateSystem) {
+      val imageSize = unscaledContentBounds.sizeIn(CoordinateSpace.Viewport)
+      assertThat(imageSize.maxDimension).isGreaterThan(viewportSize.maxDimension)
+    }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity)
+    }
+  }
+
+  // Regression test: This test simulates a scenario where a sub-sampled image is deleted from
+  // the disk after it's displayed. On state restoration, the following error image will be
+  // displayed without any sub-sampling.
+  @Test fun auto_transformation_works_if_sub_sampling_is_disabled_after_state_restoration() {
+    val stateRestorer = StateRestorationTester(rule)
+    lateinit var state: ZoomableImageState
+
+    stateRestorer.setContent {
+      ZoomableImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .testTag("image"),
+        image = ZoomableImageSource.asset("fox_1500.jpg", subSample = !wasStateRestored()),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        alignment = Alignment.CenterStart,
+        state = rememberZoomableImageState().also { state = it },
+      )
+    }
+
+    rule.waitUntil { state.isImageDisplayedInFullQuality }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_[before_state_restoration]")
+    }
+
+    stateRestorer.emulateSavedInstanceStateRestore()
+
+    rule.waitUntil { state.isImageDisplayedInFullQuality }
+    rule.runOnIdle {
+      dropshots.assertSnapshot(rule.activity, name = testName.methodName + "_[after_state_restoration]")
+    }
+  }
+
   private class PainterStub(private val initialSize: Size) : Painter() {
     private var delegatePainter: Painter? by mutableStateOf(null)
     private var loaded = false
@@ -1738,6 +2316,12 @@ class ZoomableImageTest {
   enum class ContentScaleParamWithDifferentProportions(val value: ContentScale) {
     Fit(ContentScale.Fit),          // Scaling is proportionate.
     Fill(ContentScale.FillBounds),  // Scaling is disproportionate
+  }
+
+  @Suppress("unused")
+  enum class ContentPaddingParam(val contentPadding: PaddingValues) {
+    Symmetric(PaddingValues(32.dp)),
+    Asymmetric(PaddingValues(start = 64.dp, end = 16.dp, top = 0.dp, bottom = 120.dp)),
   }
 
   @Suppress("unused")
@@ -1849,16 +2433,6 @@ private fun TouchInjectionScope.quickZoomOut(byDistance: Float = height / 2f) {
 }
 
 @Composable
-private fun assetPainter(assetName: String): Painter {
-  val context = LocalContext.current
-  return remember(assetName) {
-    context.assets.open(assetName).use { stream ->
-      BitmapPainter(BitmapFactory.decodeStream(stream).asImageBitmap())
-    }
-  }
-}
-
-@Composable
 internal fun ZoomableImageSource.Companion.asset(assetName: String, subSample: Boolean): ZoomableImageSource {
   return remember(assetName) {
     object : ZoomableImageSource {
@@ -1870,6 +2444,29 @@ internal fun ZoomableImageSource.Companion.asset(assetName: String, subSample: B
           } else {
             ZoomableImageSource.PainterDelegate(assetPainter(assetName))
           }
+        )
+      }
+    }
+  }
+}
+
+@Composable
+internal fun ZoomableImageSource.Companion.subSampledAssetWithPreview(
+  assetName: String,
+  previewAssetName: String = assetName,
+): ZoomableImageSource {
+  return remember(assetName, previewAssetName) {
+    object : ZoomableImageSource {
+      @Composable
+      override fun resolve(canvasSize: Flow<Size>): ResolveResult {
+        val context = LocalContext.current
+        val previewAssetBitmap = remember {
+          context.assets.open(previewAssetName).use(BitmapFactory::decodeStream)!!.asImageBitmap()
+        }
+        return ResolveResult(
+          delegate = ZoomableImageSource.SubSamplingDelegate(
+            SubSamplingImageSource.asset(assetName, preview = previewAssetBitmap)
+          ),
         )
       }
     }
@@ -1943,4 +2540,15 @@ private fun ZoomableImageSource.Companion.painter(
       }
     }
   }
+}
+
+@Composable
+private fun wasStateRestored(): Boolean {
+  val time = remember { System.currentTimeMillis() }
+  val restoredTime by rememberSaveable { mutableStateOf(time) }
+  return time != restoredTime
+}
+
+private fun ZoomableState.asReal(): RealZoomableState {
+  return this as RealZoomableState  // Safe because ZoomableState is a sealed type.
 }

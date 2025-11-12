@@ -35,6 +35,7 @@ interface ZoomableContentTransformation {
    * does not account for the zoom and pan transformations. Useful for synchronizing
    * other elements with the zoomable content.
    */
+  @Deprecated("Use zoomableState.coordinateSystem.unscaledContentBounds instead")
   val contentSize: Size
 
   /**
@@ -85,12 +86,14 @@ interface ZoomableContentTransformation {
     val initialScale: ScaleFactor
 
     /**
-     * Scale applied by the user using zoom gestures. The final scale of the content
-     * is calculated using [initialScale] x [userZoom], and will always be lower or equal
-     * to [ZoomSpec.maxZoomFactor].
+     * Scale applied by the user through zoom gestures. The final scale of the content
+     * is calculated using [initialScale] x [userZoom].
      *
-     * For example, a `userZoom` of `1.5f` indicates that the content is zoomed 150% from its
-     * [initialScale].
+     * While a gesture is in progress, this value may temporarily exceed the [ZoomSpec.minimum]
+     * and [ZoomSpec.maximum] limits, depending on their associated [OverzoomEffect].
+     *
+     * For example, a `userZoom` of `1.5f` indicates that the content is zoomed to 150% of
+     * its [initialScale].
      */
     val userZoom: Float
   }

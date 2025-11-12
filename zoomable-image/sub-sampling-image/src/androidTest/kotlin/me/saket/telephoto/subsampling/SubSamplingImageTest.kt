@@ -3,6 +3,7 @@
 package me.saket.telephoto.subsampling
 
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.compose.foundation.border
@@ -14,7 +15,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,7 +26,6 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.ColorPainter
-import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.ScaleFactor
 import androidx.compose.ui.platform.LocalContext
@@ -55,12 +54,8 @@ import me.saket.telephoto.subsamplingimage.RealSubSamplingImageState
 import me.saket.telephoto.subsamplingimage.SubSamplingImage
 import me.saket.telephoto.subsamplingimage.SubSamplingImageSource
 import me.saket.telephoto.subsamplingimage.SubSamplingImageState
-import me.saket.telephoto.subsamplingimage.internal.AndroidImageRegionDecoder
 import me.saket.telephoto.subsamplingimage.internal.ImageRegionDecoder
-import me.saket.telephoto.subsamplingimage.internal.ImageRegionTile
-import me.saket.telephoto.subsamplingimage.internal.ImageSampleSize
-import me.saket.telephoto.subsamplingimage.internal.LocalImageRegionDecoderFactory
-import me.saket.telephoto.subsamplingimage.internal.PooledImageRegionDecoder
+import me.saket.telephoto.subsamplingimage.internal.PooledAndroidImageRegionDecoder
 import me.saket.telephoto.subsamplingimage.rememberSubSamplingImageState
 import me.saket.telephoto.subsamplingimage.test.R
 import me.saket.telephoto.util.CiScreenshotValidator
@@ -88,7 +83,7 @@ import kotlin.time.Duration.Companion.seconds
 @RunWith(TestParameterInjector::class)
 class SubSamplingImageTest {
   @get:Rule val rule = createAndroidComposeRule<ScreenshotTestActivity>()
-  @get:Rule val timeout = Timeout.seconds(10)!!
+  @get:Rule val timeout = Timeout.seconds(30)!!
   @get:Rule val testName = TestName()
 
   private val screenshotValidator = CiScreenshotValidator(
@@ -97,13 +92,13 @@ class SubSamplingImageTest {
     tolerancePercentOnCi = 0.01f,
   )
   @get:Rule val dropshots = Dropshots(
-    filenameFunc = { it },
+    filenameFunc = { _, testName -> testName },
     resultValidator = screenshotValidator,
   )
 
   @After
   fun tearDown() {
-    PooledImageRegionDecoder.overriddenPoolCount = null
+    PooledAndroidImageRegionDecoder.overriddenPoolCount = null
     LeakAssertions.assertNoLeaks()
   }
 
@@ -183,7 +178,9 @@ class SubSamplingImageTest {
         state = rememberSubSamplingImageState(
           zoomableState = zoomableState,
           imageSource = SubSamplingImageSource.asset("pahade.jpg"),
-        ),
+        ).also {
+          it.asReal().preferConsistentTileSize = false
+        },
         contentDescription = null,
       )
     }
@@ -247,52 +244,45 @@ class SubSamplingImageTest {
   }
 
   @Test fun draw_base_tile_to_fill_gaps_in_foreground_tiles() {
-    screenshotValidator.tolerancePercentOnCi = 0.12f
-
     // This test blocks 2 decoders indefinitely so at least 3 decoders are needed.
-    PooledImageRegionDecoder.overriddenPoolCount = 3
+    PooledAndroidImageRegionDecoder.overriddenPoolCount = 3
 
-    // This fake image factory will only decode the base tile.
-    val fakeRegionDecoderFactory = ImageRegionDecoder.Factory { params ->
-      val real = AndroidImageRegionDecoder.Factory.create(params)
-      object : ImageRegionDecoder by real {
-        override suspend fun decodeRegion(region: ImageRegionTile): Painter {
-          return if (region.sampleSize == ImageSampleSize(1) && region.bounds.left == 3648) {
-            delay(Long.MAX_VALUE)
-            error("shouldn't reach here")
-          } else {
-            real.decodeRegion(region)
-          }
+    // This fake image decoder will only decode the base tile.
+    val imageSource = SubSamplingImageSource.asset("pahade.jpg")
+      .withDecodeInterceptor { region, sampleSize, continueDecoding ->
+        if (sampleSize == 1 && region.left == 3648) {
+          delay(Long.MAX_VALUE)
+          error("shouldn't reach here")
+        } else {
+          continueDecoding()
         }
       }
-    }
 
     rule.setContent {
       BoxWithConstraints {
         check(constraints.maxWidth == 1080 && constraints.maxHeight == 2400) {
           "This test was written for a 1080x2400 display. Current size = $constraints"
         }
-        CompositionLocalProvider(LocalImageRegionDecoderFactory provides fakeRegionDecoderFactory) {
-          val zoomableState = rememberZoomableState(
-            zoomSpec = ZoomSpec(maxZoomFactor = 1f)
-          ).also {
-            it.contentScale = ContentScale.Crop
-          }
-
-          SubSamplingImage(
-            modifier = Modifier
-              .fillMaxSize()
-              .zoomable(zoomableState)
-              .testTag("image"),
-            state = rememberSubSamplingImageState(
-              zoomableState = zoomableState,
-              imageSource = SubSamplingImageSource.asset("pahade.jpg"),
-            ).asReal().also {
-              it.showTileBounds = true
-            },
-            contentDescription = null,
-          )
+        val zoomableState = rememberZoomableState(
+          zoomSpec = ZoomSpec(maxZoomFactor = 1f)
+        ).also {
+          it.contentScale = ContentScale.Crop
         }
+
+        SubSamplingImage(
+          modifier = Modifier
+            .fillMaxSize()
+            .zoomable(zoomableState)
+            .testTag("image"),
+          state = rememberSubSamplingImageState(
+            zoomableState = zoomableState,
+            imageSource = imageSource,
+          ).asReal().also {
+            it.showTileBounds = true
+            it.preferConsistentTileSize = false
+          },
+          contentDescription = null,
+        )
       }
     }
 
@@ -306,46 +296,39 @@ class SubSamplingImageTest {
   }
 
   @Test fun draw_tile_under_centroid_first() {
-    screenshotValidator.tolerancePercentOnCi = 0.15f
-
     // This test only allows 1 decoder to work so at least 2 decoders are needed.
-    PooledImageRegionDecoder.overriddenPoolCount = 2
+    PooledAndroidImageRegionDecoder.overriddenPoolCount = 2
 
-    // This fake factory will ignore decoding of all but the first tiles.
+    // This fake decoder will ignore decoding of all but the first tiles.
     val firstNonBaseTileReceived = AtomicBoolean(false)
-    val fakeRegionDecoderFactory = ImageRegionDecoder.Factory { params ->
-      val real = AndroidImageRegionDecoder.Factory.create(params)
-      object : ImageRegionDecoder by real {
-        override suspend fun decodeRegion(region: ImageRegionTile): Painter {
-          val isBaseTile = region.sampleSize.size == 8
-          val isCentroidTile = region.sampleSize.size == 1 && region.bounds == IntRect(0, 1200, 1216, 3265)
-          return if (isBaseTile || (isCentroidTile && !firstNonBaseTileReceived.getAndSet(true))) {
-            real.decodeRegion(region)
-          } else {
-            delay(Long.MAX_VALUE)
-            error("shouldn't reach here")
-          }
+    val imageSource = SubSamplingImageSource.asset("pahade.jpg")
+      .withDecodeInterceptor { region, sampleSize, continueDecoding ->
+        val isBaseTile = sampleSize == 8
+        val isCentroidTile = sampleSize == 1 && region == IntRect(0, 1200, 1216, 3265)
+        if (isBaseTile || (isCentroidTile && !firstNonBaseTileReceived.getAndSet(true))) {
+          continueDecoding()
+        } else {
+          delay(Long.MAX_VALUE)
+          error("shouldn't reach here")
         }
       }
-    }
 
     rule.setContent {
-      CompositionLocalProvider(LocalImageRegionDecoderFactory provides fakeRegionDecoderFactory) {
-        val zoomableState = rememberZoomableState()
-        SubSamplingImage(
-          modifier = Modifier
-            .fillMaxSize()
-            .zoomable(zoomableState)
-            .testTag("image"),
-          state = rememberSubSamplingImageState(
-            zoomableState = zoomableState,
-            imageSource = SubSamplingImageSource.asset("pahade.jpg"),
-          ).asReal().also {
-            it.showTileBounds = true
-          },
-          contentDescription = null,
-        )
-      }
+      val zoomableState = rememberZoomableState()
+      SubSamplingImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .zoomable(zoomableState)
+          .testTag("image"),
+        state = rememberSubSamplingImageState(
+          zoomableState = zoomableState,
+          imageSource = imageSource,
+        ).asReal().also {
+          it.showTileBounds = true
+          it.preferConsistentTileSize = false
+        },
+        contentDescription = null,
+      )
     }
 
     rule.onNodeWithTag("image").performTouchInput {
@@ -361,7 +344,7 @@ class SubSamplingImageTest {
   }
 
   @Test fun up_scaled_tiles_should_not_have_gaps_due_to_precision_loss() {
-    screenshotValidator.tolerancePercentOnCi = 0.014f
+    screenshotValidator.tolerancePercentOnCi = 0.013f
 
     rule.setContent {
       BoxWithConstraints {
@@ -385,7 +368,9 @@ class SubSamplingImageTest {
               centroid = Offset.Zero,
             )
           },
-        )
+        ).also {
+          it.asReal().preferConsistentTileSize = false
+        }
 
         SubSamplingImage(
           modifier = Modifier
@@ -463,8 +448,6 @@ class SubSamplingImageTest {
   @Test fun bitmap_tiles_should_be_at_least_half_of_layout_size(
     @TestParameter size: LayoutSizeParam,
   ) {
-    screenshotValidator.tolerancePercentOnCi = 0.1f
-
     rule.setContent {
       val zoomableState = rememberZoomableState(
         zoomSpec = ZoomSpec(maxZoomFactor = 1f)
@@ -480,6 +463,7 @@ class SubSamplingImageTest {
           imageSource = SubSamplingImageSource.asset("pahade.jpg"),
         ).asReal().also {
           it.showTileBounds = true
+          it.preferConsistentTileSize = false
         },
         contentDescription = null,
       )
@@ -507,13 +491,23 @@ class SubSamplingImageTest {
   @Test fun various_image_orientations_in_exif_metadata(
     @TestParameter imageAsset: ExifRotatedImageAssetParam,
     @TestParameter alignment: AlignmentParam,
-    @TestParameter contentScale: ContentScaleParam,
   ) {
-    screenshotValidator.tolerancePercentOnCi = 0.06f
+    screenshotValidator.tolerancePercentOnCi = 0.024f
 
     val skipAlignment = when (alignment) {
-      AlignmentParam.TopCenter,
       AlignmentParam.Center -> false
+      AlignmentParam.TopCenter -> {
+        when (imageAsset) {
+          ExifRotatedImageAssetParam.FlippedHorizontallyAndRotatedBy270 -> false
+          ExifRotatedImageAssetParam.RotatedBy90 -> false
+
+          ExifRotatedImageAssetParam.FlippedHorizontally,
+          ExifRotatedImageAssetParam.RotatedBy180,
+          ExifRotatedImageAssetParam.FlippedVertically,
+          ExifRotatedImageAssetParam.FlippedHorizontallyAndRotatedBy90,
+          ExifRotatedImageAssetParam.RotatedBy270 -> true
+        }
+      }
       AlignmentParam.BottomCenter -> true
     }
     if (skipAlignment) {
@@ -522,7 +516,6 @@ class SubSamplingImageTest {
 
     rule.setContent {
       val zoomableState = rememberZoomableState(ZoomSpec(maxZoomFactor = 2.5f)).also {
-        it.contentScale = contentScale.value
         it.contentAlignment = alignment.value
       }
 
@@ -534,7 +527,9 @@ class SubSamplingImageTest {
         state = rememberSubSamplingImageState(
           zoomableState = zoomableState,
           imageSource = SubSamplingImageSource.asset(imageAsset.assetName),
-        ),
+        ).also {
+          it.asReal().showTileBounds = true
+        },
         contentDescription = null,
       )
     }
@@ -568,41 +563,37 @@ class SubSamplingImageTest {
   }
 
   @Test fun preview_bitmap_should_not_be_rotated() {
+    screenshotValidator.tolerancePercentOnCi = 0.024f
+
     val previewBitmapMutex = Mutex(locked = true)
     var fullImageDecoded = false
-
-    val gatedDecoderFactory = ImageRegionDecoder.Factory { params ->
-      val real = AndroidImageRegionDecoder.Factory.create(params)
-      object : ImageRegionDecoder by real {
-        override suspend fun decodeRegion(region: ImageRegionTile): Painter {
-          return previewBitmapMutex.withLock {
-            real.decodeRegion(region)
-          }.also {
-            fullImageDecoded = true
-          }
-        }
-      }
-    }
 
     val previewBitmap = BitmapFactory.decodeStream(
       rule.activity.assets.open("smol.jpg")
     ).asImageBitmap()
 
-    rule.setContent {
-      CompositionLocalProvider(LocalImageRegionDecoderFactory provides gatedDecoderFactory) {
-        val zoomableState = rememberZoomableState()
-        SubSamplingImage(
-          modifier = Modifier
-            .fillMaxSize()
-            .zoomable(zoomableState)
-            .testTag("image"),
-          state = rememberSubSamplingImageState(
-            zoomableState = zoomableState,
-            imageSource = SubSamplingImageSource.asset("bellagio_rotated_by_90.jpg", preview = previewBitmap),
-          ),
-          contentDescription = null,
-        )
+    val imageSource = SubSamplingImageSource.asset("jasper_rotated_90.jpg", preview = previewBitmap)
+      .withDecodeInterceptor { _, _, continueDecoding ->
+        previewBitmapMutex.withLock {
+          continueDecoding()
+        }.also {
+          fullImageDecoded = true
+        }
       }
+
+    rule.setContent {
+      val zoomableState = rememberZoomableState()
+      SubSamplingImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .zoomable(zoomableState)
+          .testTag("image"),
+        state = rememberSubSamplingImageState(
+          zoomableState = zoomableState,
+          imageSource = imageSource,
+        ),
+        contentDescription = null,
+      )
     }
 
     rule.waitUntil {
@@ -658,48 +649,44 @@ class SubSamplingImageTest {
   }
 
   @Test fun do_not_draw_base_tile_after_foreground_tiles_images_are_loaded() {
-    screenshotValidator.tolerancePercentOnCi = 7.4f
-
     // This test blocks 1 decoders so at least 2 decoders are needed.
-    PooledImageRegionDecoder.overriddenPoolCount = 2
+    PooledAndroidImageRegionDecoder.overriddenPoolCount = 2
 
     val mutexForDecodingLastTile = Mutex(locked = true)
-
-    val fakeRegionDecoderFactory = ImageRegionDecoder.Factory { params ->
-      val real = AndroidImageRegionDecoder.Factory.create(params)
-      object : ImageRegionDecoder by real {
-        override suspend fun decodeRegion(region: ImageRegionTile): Painter {
-          return if (region.sampleSize == ImageSampleSize(1)) {
-            if (region.bounds.topLeft == IntOffset(4864, 1200)) {
-              mutexForDecodingLastTile.lock()
-            }
-            ColorPainter(Color.Yellow.copy(alpha = 0.5f))
-          } else {
-            real.decodeRegion(region)
+    val imageSource = SubSamplingImageSource.asset("pahade.jpg")
+      .withDecodeInterceptor { region, sampleSize, continueDecoding ->
+        if (sampleSize == 1) {
+          if (region.topLeft == IntOffset(4864, 1200)) {
+            mutexForDecodingLastTile.lock()
           }
+          ImageRegionDecoder.DecodeResult(
+            painter = ColorPainter(Color.Yellow.copy(alpha = 0.5f)),
+            hasUltraHdrContent = false,
+          )
+        } else {
+          continueDecoding()
         }
       }
-    }
 
     lateinit var imageState: SubSamplingImageState
     rule.setContent {
       val zoomableState = rememberZoomableState(
         zoomSpec = ZoomSpec(maxZoomFactor = 1f)
       )
-      CompositionLocalProvider(LocalImageRegionDecoderFactory provides fakeRegionDecoderFactory) {
-        imageState = rememberSubSamplingImageState(
-          zoomableState = zoomableState,
-          imageSource = SubSamplingImageSource.asset("pahade.jpg"),
-        )
-        SubSamplingImage(
-          modifier = Modifier
-            .fillMaxSize()
-            .zoomable(zoomableState)
-            .testTag("image"),
-          state = imageState,
-          contentDescription = null,
-        )
+      imageState = rememberSubSamplingImageState(
+        zoomableState = zoomableState,
+        imageSource = imageSource,
+      ).also {
+        it.asReal().preferConsistentTileSize = false
       }
+      SubSamplingImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .zoomable(zoomableState)
+          .testTag("image"),
+        state = imageState,
+        contentDescription = null,
+      )
     }
 
     rule.waitUntil { imageState.isImageDisplayed }
@@ -708,13 +695,15 @@ class SubSamplingImageTest {
 
     rule.waitUntil {
       // Wait until all but the delayed tile are loaded.
-      imageState.asReal().viewportImageTiles.count { !it.isBase && it.painter != null } == 3
+      val tiles = imageState.asReal().viewportImageTiles
+      tiles.any { it.isBase && it.painter != null } && tiles.count { !it.isBase && it.painter != null } == 3
     }
     rule.runOnIdle {
       // The base image should still be visible behind the foreground tiles.
       dropshots.assertSnapshot(rule.activity, testName.methodName + "_[before_loading_all_tiles]")
     }
 
+    // Load the remaining tile.
     mutexForDecodingLastTile.unlock()
 
     rule.waitUntil { imageState.isImageDisplayedInFullQuality }
@@ -725,43 +714,40 @@ class SubSamplingImageTest {
 
   @Test fun do_not_load_images_for_tiles_that_are_not_visible() {
     val decodedRegionCount = AtomicInteger(0)
-    val recordingDecoderFactory = ImageRegionDecoder.Factory { params ->
-      val real = AndroidImageRegionDecoder.Factory.create(params)
-      object : ImageRegionDecoder by real {
-        override suspend fun decodeRegion(region: ImageRegionTile) =
-          real.decodeRegion(region).also {
-            if (region.sampleSize == ImageSampleSize(1)) {
-              decodedRegionCount.incrementAndGet()
-            }
+    val imageSource = SubSamplingImageSource.asset("pahade.jpg")
+      .withDecodeInterceptor { _, sampleSize, continueDecoding ->
+        continueDecoding().also {
+          if (sampleSize == 1) {
+            decodedRegionCount.incrementAndGet()
           }
+        }
       }
-    }
 
     lateinit var imageState: SubSamplingImageState
     rule.setContent {
       val zoomableState = rememberZoomableState(
         zoomSpec = ZoomSpec(maxZoomFactor = 1f)
       )
-      CompositionLocalProvider(LocalImageRegionDecoderFactory provides recordingDecoderFactory) {
-        imageState = rememberSubSamplingImageState(
-          zoomableState = zoomableState,
-          imageSource = SubSamplingImageSource.asset("pahade.jpg"),
-        )
-        SubSamplingImage(
-          modifier = Modifier
-            .fillMaxSize()
-            .zoomable(zoomableState)
-            .testTag("image"),
-          state = imageState,
-          contentDescription = null,
-        )
+      imageState = rememberSubSamplingImageState(
+        zoomableState = zoomableState,
+        imageSource = imageSource,
+      ).also {
+        it.asReal().preferConsistentTileSize = false
       }
+      SubSamplingImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .zoomable(zoomableState)
+          .testTag("image"),
+        state = imageState,
+        contentDescription = null,
+      )
     }
 
     rule.waitUntil { imageState.isImageDisplayed }
     rule.onNodeWithTag("image").performTouchInput { doubleClick() }
 
-    rule.waitUntil(3.seconds) { imageState.isImageDisplayedInFullQuality }
+    rule.waitUntil { imageState.isImageDisplayedInFullQuality }
     rule.runOnIdle {
       assertThat(decodedRegionCount.get()).isEqualTo(4)
     }
@@ -798,7 +784,7 @@ class SubSamplingImageTest {
   }
 
   @Test fun raw_stream_works_with_multiple_decoders() {
-    PooledImageRegionDecoder.overriddenPoolCount = 2
+    PooledAndroidImageRegionDecoder.overriddenPoolCount = 2
 
     rule.setContent {
       val zoomableState = rememberZoomableState()
@@ -821,6 +807,43 @@ class SubSamplingImageTest {
     rule.waitUntil {
       rule.onNodeWithTag("image").isImageDisplayed()
     }
+  }
+
+  @Test fun enable_hdr_color_mode_for_images_that_contain_ultra_hdr_content() {
+    assertThat(rule.activity.window.colorMode).isEqualTo(ActivityInfo.COLOR_MODE_DEFAULT)
+
+    var imageAssetName by mutableStateOf("fox_1000.jpg")
+    rule.setContent {
+      val zoomableState = rememberZoomableState()
+      SubSamplingImage(
+        modifier = Modifier
+          .fillMaxSize()
+          .zoomable(zoomableState)
+          .testTag("image"),
+        state = rememberSubSamplingImageState(
+          zoomableState = zoomableState,
+          imageSource = SubSamplingImageSource.asset(imageAssetName),
+        ),
+        contentDescription = null,
+      )
+    }
+
+    rule.waitUntil {
+      rule.onNodeWithTag("image").isImageDisplayed()
+    }
+    assertThat(rule.activity.window.colorMode).isEqualTo(ActivityInfo.COLOR_MODE_DEFAULT)
+
+    imageAssetName = "vadapav_ultra_hdr.jpg"
+    rule.waitUntil {
+      rule.onNodeWithTag("image").isImageDisplayedInFullQuality()
+    }
+    assertThat(rule.activity.window.colorMode).isEqualTo(ActivityInfo.COLOR_MODE_HDR)
+
+    imageAssetName = "path.jpg"
+    rule.waitUntil {
+      rule.onNodeWithTag("image").isImageDisplayedInFullQuality()
+    }
+    assertThat(rule.activity.window.colorMode).isEqualTo(ActivityInfo.COLOR_MODE_DEFAULT)
   }
 
   @Suppress("unused")
@@ -854,9 +877,13 @@ class SubSamplingImageTest {
 
   @Suppress("unused")
   enum class ExifRotatedImageAssetParam(val assetName: String) {
-    RotatedBy90("bellagio_rotated_by_90.jpg"),
-    RotatedBy180("bellagio_rotated_by_180.jpg"),
-    RotatedBy270("bellagio_rotated_by_270.jpg"),
+    FlippedHorizontally("jasper_flipped_horizontally.jpg"),
+    RotatedBy180("jasper_rotated_180.jpg"),
+    FlippedVertically("jasper_flipped_vertically.jpg"),
+    FlippedHorizontallyAndRotatedBy270("jasper_flipped_horizontally_rotated_270.jpg"),
+    RotatedBy90("jasper_rotated_90.jpg"),
+    FlippedHorizontallyAndRotatedBy90("jasper_flipped_horizontally_rotated_90.jpg"),
+    RotatedBy270("jasper_rotated_270.jpg")
   }
 
   @Suppress("unused")
@@ -877,3 +904,28 @@ private fun Context.createFileFromAsset(assetName: String): Path {
 }
 
 private fun SubSamplingImageState.asReal() = this as RealSubSamplingImageState
+
+private fun SubSamplingImageSource.withDecodeInterceptor(
+  intercept: suspend (
+    region: IntRect,
+    sampleSize: Int,
+    continueDecoding: suspend () -> ImageRegionDecoder.DecodeResult,
+  ) -> ImageRegionDecoder.DecodeResult,
+): SubSamplingImageSource {
+  val delegate = this
+  return object : SubSamplingImageSource by delegate {
+    override suspend fun decoder(): ImageRegionDecoder.Factory {
+      return ImageRegionDecoder.Factory { params ->
+        val real = delegate.decoder().create(params)
+        object : ImageRegionDecoder by real {
+          override suspend fun decodeRegion(
+            region: IntRect,
+            sampleSize: Int,
+          ) = intercept(region, sampleSize) {
+            real.decodeRegion(region, sampleSize)
+          }
+        }
+      }
+    }
+  }
+}

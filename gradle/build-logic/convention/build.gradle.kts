@@ -6,6 +6,7 @@ dependencies {
   compileOnly(libs.plugin.agp)
   compileOnly(libs.plugin.kotlin)
   compileOnly(libs.plugin.jetbrains.compose)
+  compileOnly(libs.plugin.compose.compiler)
   compileOnly(libs.plugin.dokka)
   compileOnly(libs.plugin.mavenPublish)
   compileOnly(libs.plugin.dropshots)
@@ -42,7 +43,7 @@ gradlePlugin {
     }
     register("compose") {
       id = "me.saket.compose"
-      implementationClass = "ComposeConventionPlugin"
+      implementationClass = "AndroidComposeConventionPlugin"
     }
   }
 }

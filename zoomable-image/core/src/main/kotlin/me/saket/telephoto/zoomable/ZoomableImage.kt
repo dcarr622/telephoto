@@ -8,6 +8,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.RememberObserver
@@ -33,16 +34,19 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.toSize
 import kotlinx.coroutines.flow.filter
+import me.saket.telephoto.subsamplingimage.RealSubSamplingImageState
 import me.saket.telephoto.subsamplingimage.SubSamplingImage
+import me.saket.telephoto.subsamplingimage.SubSamplingImageState
 import me.saket.telephoto.subsamplingimage.contentDescription
 import me.saket.telephoto.subsamplingimage.rememberSubSamplingImageState
 import me.saket.telephoto.zoomable.internal.FocusForwarder
 import me.saket.telephoto.zoomable.internal.PlaceholderBoundsProvider
+import me.saket.telephoto.zoomable.internal.applyBaseTransformation
 import me.saket.telephoto.zoomable.internal.focusForwarder
 import me.saket.telephoto.zoomable.internal.receiveFocusFrom
-import me.saket.telephoto.zoomable.internal.scaledToMatch
 
 /**
  * A _drop-in_ replacement for async `Image()` composables featuring support for pan & zoom gestures
@@ -53,8 +57,6 @@ import me.saket.telephoto.zoomable.internal.scaledToMatch
  * and [Modifier.combinedClickable] will not work on this composable. As an alternative, [onClick]
  * and [onLongClick] parameters can be used instead.
  *
- * @param gesturesEnabled whether or not gestures are enabled.
- *
  * @param clipToBounds defaults to true to act as a reminder that this layout should probably fill all
  * available space. Otherwise, gestures made outside the composable's layout bounds will not be registered.
  */
@@ -62,21 +64,23 @@ import me.saket.telephoto.zoomable.internal.scaledToMatch
 fun ZoomableImage(
   image: ZoomableImageSource,
   contentDescription: String?,
+  gestures: EnabledZoomGestures,
   modifier: Modifier = Modifier,
   state: ZoomableImageState = rememberZoomableImageState(rememberZoomableState()),
   alpha: Float = DefaultAlpha,
   colorFilter: ColorFilter? = null,
   alignment: Alignment = Alignment.Center,
   contentScale: ContentScale = ContentScale.Fit,
-  gesturesEnabled: Boolean = true,
   onClick: ((Offset) -> Unit)? = null,
   onLongClick: ((Offset) -> Unit)? = null,
-  clipToBounds: Boolean = true,
   onDoubleClick: DoubleClickToZoomListener = DoubleClickToZoomListener.cycle(),
+  clipToBounds: Boolean = true,
+  contentPadding: PaddingValues = PaddingValues(0.dp),
 ) {
   state.zoomableState.also {
     it.contentAlignment = alignment
     it.contentScale = contentScale
+    it.contentPadding = contentPadding
   }
 
   var canvasSize by remember { mutableStateOf(Size.Unspecified) }
@@ -133,12 +137,26 @@ fun ZoomableImage(
     }
 
     if (state.isPlaceholderDisplayed && !wasImageZoomedIn) {
-      val painter = animatedPainter(resolved.placeholder!!).scaledToMatch(
-        // Align with the full-quality image even if the placeholder is smaller in size.
-        // This will only work when ZoomableImage is given fillMaxSize or a fixed size.
-        state.zoomableState.contentTransformation.contentSize,
-      )
-      val boundsProvider = PlaceholderBoundsProvider(contentSize = painter.intrinsicSize)
+      val painter = animatedPainter(resolved.placeholder!!)
+
+      // The placeholder image uses a separate ZoomableState so that it
+      // can swallow all zoom gestures while the full image is loading.
+      // TODO: Make placeholders zoomable and smoothly transition to full
+      //  image without losing zoom level https://github.com/saket/telephoto/issues/104
+      val placeholderZoomableState = rememberZoomableState(
+        zoomSpec = ZoomSpec(maxZoomFactor = 1f, overzoomEffect = OverzoomEffect.Disabled),
+        hardwareShortcutsSpec = HardwareShortcutsSpec.Disabled,
+        // Handle gestures, but ignore their transformations. This will prevent
+        // FlickToDismiss() (and other gesture containers) from accidentally dismissing
+        // this image when a quick-zoom gesture is made before the image is fully loaded.
+        autoApplyTransformations = false,
+      ).also {
+        it.contentScale = contentScale
+        it.contentAlignment = alignment
+        it.contentPadding = contentPadding
+        it.setContentLocation(ZoomableContentLocation.scaledInsideAndCenterAligned(painter.intrinsicSize))
+      }
+      val boundsProvider = PlaceholderBoundsProvider(placeholderZoomableState)
       DisposableEffect(state, boundsProvider) {
         state.realZoomableState.placeholderBoundsProvider = boundsProvider
         onDispose {
@@ -147,25 +165,18 @@ fun ZoomableImage(
       }
       Image(
         modifier = Modifier
-          .onSizeChanged { boundsProvider.viewportSize = it }
           .zoomable(
-            // Handle gestures, but ignore their transformations. This will prevent
-            // FlickToDismiss() (and other gesture containers) from accidentally dismissing
-            // this image when a quick-zoom gesture is made before the image is fully loaded.
-            state = rememberZoomableState(
-              zoomSpec = ZoomSpec(maxZoomFactor = 1f, preventOverOrUnderZoom = false),
-              hardwareShortcutsSpec = HardwareShortcutsSpec.Disabled,
-              autoApplyTransformations = false,
-            ),
+            state = placeholderZoomableState,
             onClick = onClick,
             onLongClick = onLongClick,
             onDoubleClick = onDoubleClick,
             clipToBounds = clipToBounds,
-          ),
+          )
+          .applyBaseTransformation(placeholderZoomableState),
         painter = painter,
         contentDescription = null,
-        alignment = alignment,
-        contentScale = contentScale,
+        alignment = Alignment.Center,
+        contentScale = ContentScale.Inside,
         alpha = alpha,
         colorFilter = colorFilter,
       )
@@ -175,7 +186,7 @@ fun ZoomableImage(
       .receiveFocusFrom(focusForwarder)
       .zoomable(
         state = state.zoomableState,
-        enabled = gesturesEnabled && !state.isPlaceholderDisplayed,
+        gestures = if (state.isPlaceholderDisplayed) EnabledZoomGestures.None else gestures,
         onClick = onClick,
         onLongClick = onLongClick,
         onDoubleClick = onDoubleClick,
@@ -188,13 +199,13 @@ fun ZoomableImage(
       }
 
       is ZoomableImageSource.PainterDelegate -> {
-        val painter = delegate.painter ?: EmptyPainter
+        state.zoomableState.autoApplyTransformations = true
         state.zoomableState.setContentLocation(
-          ZoomableContentLocation.scaledInsideAndCenterAligned(painter.intrinsicSize)
+          ZoomableContentLocation.scaledInsideAndCenterAligned(delegate.painter?.intrinsicSize)
         )
         Image(
           modifier = zoomable,
-          painter = animatedPainter(painter),
+          painter = animatedPainter(delegate.painter ?: EmptyPainter),
           contentDescription = contentDescription,
           alignment = Alignment.Center,
           contentScale = ContentScale.Inside,
@@ -208,7 +219,9 @@ fun ZoomableImage(
           imageSource = delegate.source,
           zoomableState = state.zoomableState,
           imageOptions = delegate.imageOptions
-        )
+        ).also {
+          it.asReal().preferConsistentTileSize = false
+        }
         DisposableEffect(state, subSamplingState) {
           state.subSamplingState = subSamplingState
           onDispose {
@@ -227,6 +240,80 @@ fun ZoomableImage(
   }
 }
 
+@Composable
+fun ZoomableImage(
+  image: ZoomableImageSource,
+  contentDescription: String?,
+  modifier: Modifier = Modifier,
+  state: ZoomableImageState = rememberZoomableImageState(rememberZoomableState()),
+  alpha: Float = DefaultAlpha,
+  colorFilter: ColorFilter? = null,
+  alignment: Alignment = Alignment.Center,
+  contentScale: ContentScale = ContentScale.Fit,
+  onClick: ((Offset) -> Unit)? = null,
+  onLongClick: ((Offset) -> Unit)? = null,
+  clipToBounds: Boolean = true,
+  onDoubleClick: DoubleClickToZoomListener = DoubleClickToZoomListener.cycle(),
+  contentPadding: PaddingValues = PaddingValues(0.dp),
+) {
+  ZoomableImage(
+    image = image,
+    contentDescription = contentDescription,
+    modifier = modifier,
+    state = state,
+    alpha = alpha,
+    colorFilter = colorFilter,
+    alignment = alignment,
+    contentScale = contentScale,
+    gestures = EnabledZoomGestures.ZoomAndPan,
+    onClick = onClick,
+    onLongClick = onLongClick,
+    onDoubleClick = onDoubleClick,
+    clipToBounds = clipToBounds,
+    contentPadding = contentPadding,
+  )
+}
+
+@Deprecated(
+  "Use the 'gestures' parameter instead. " +
+    "Replace `gesturesEnabled = true` with `gestures = ZoomInteractions.ZoomAndPan`, " +
+    "or `gesturesEnabled = false` with `gestures = ZoomInteractions.None`.",
+)
+@Composable
+fun ZoomableImage(
+  image: ZoomableImageSource,
+  contentDescription: String?,
+  modifier: Modifier = Modifier,
+  state: ZoomableImageState = rememberZoomableImageState(rememberZoomableState()),
+  alpha: Float = DefaultAlpha,
+  colorFilter: ColorFilter? = null,
+  alignment: Alignment = Alignment.Center,
+  contentScale: ContentScale = ContentScale.Fit,
+  gesturesEnabled: Boolean = true,
+  onClick: ((Offset) -> Unit)? = null,
+  onLongClick: ((Offset) -> Unit)? = null,
+  clipToBounds: Boolean = true,
+  onDoubleClick: DoubleClickToZoomListener = DoubleClickToZoomListener.cycle(),
+  contentPadding: PaddingValues = PaddingValues(0.dp),
+) {
+  ZoomableImage(
+    image = image,
+    contentDescription = contentDescription,
+    modifier = modifier,
+    state = state,
+    alpha = alpha,
+    colorFilter = colorFilter,
+    alignment = alignment,
+    contentScale = contentScale,
+    gestures = if (gesturesEnabled) EnabledZoomGestures.ZoomAndPan else EnabledZoomGestures.None,
+    onClick = onClick,
+    onLongClick = onLongClick,
+    onDoubleClick = onDoubleClick,
+    clipToBounds = clipToBounds,
+    contentPadding = contentPadding,
+  )
+}
+
 private fun Modifier.contentDescriptionIfImageIsEmpty(
   imageState: ZoomableImageState,
   contentDescription: String?
@@ -238,6 +325,41 @@ private fun Modifier.contentDescriptionIfImageIsEmpty(
   } else {
     this.contentDescription(contentDescription)
   }
+}
+
+@Composable
+@Suppress("unused")
+@Deprecated("Kept for binary compatibility", level = DeprecationLevel.HIDDEN)
+fun ZoomableImage(
+  image: ZoomableImageSource,
+  contentDescription: String?,
+  modifier: Modifier = Modifier,
+  state: ZoomableImageState = rememberZoomableImageState(rememberZoomableState()),
+  alpha: Float = DefaultAlpha,
+  colorFilter: ColorFilter? = null,
+  alignment: Alignment = Alignment.Center,
+  contentScale: ContentScale = ContentScale.Fit,
+  gesturesEnabled: Boolean = true,
+  onClick: ((Offset) -> Unit)? = null,
+  onLongClick: ((Offset) -> Unit)? = null,
+  clipToBounds: Boolean = true,
+  onDoubleClick: DoubleClickToZoomListener = DoubleClickToZoomListener.cycle(),
+) {
+  ZoomableImage(
+    image = image,
+    contentDescription = contentDescription,
+    modifier = modifier,
+    state = state,
+    alpha = alpha,
+    colorFilter = colorFilter,
+    alignment = alignment,
+    contentScale = contentScale,
+    gestures = if (gesturesEnabled) EnabledZoomGestures.ZoomAndPan else EnabledZoomGestures.None,
+    onClick = onClick,
+    onLongClick = onLongClick,
+    onDoubleClick = onDoubleClick,
+    clipToBounds = clipToBounds,
+  )
 }
 
 @Composable
@@ -265,11 +387,11 @@ fun ZoomableImage(
     colorFilter = colorFilter,
     alignment = alignment,
     contentScale = contentScale,
-    gesturesEnabled = gesturesEnabled,
+    gestures = if (gesturesEnabled) EnabledZoomGestures.ZoomAndPan else EnabledZoomGestures.None,
     onClick = onClick,
     onLongClick = onLongClick,
-    clipToBounds = clipToBounds,
     onDoubleClick = DoubleClickToZoomListener.cycle(),
+    clipToBounds = clipToBounds,
   )
 }
 
@@ -293,6 +415,9 @@ private val ZoomableImageSource.ResolveResult.crossfadeDurationMs: Int
 
 private val ZoomableImageState.realZoomableState: RealZoomableState
   get() = zoomableState as RealZoomableState  // Safe because ZoomableState is a sealed type.
+
+private fun SubSamplingImageState.asReal(): RealSubSamplingImageState =
+  this as RealSubSamplingImageState  // Safe because SubSamplingImageState is a sealed type.
 
 private fun ZoomableImageState.hardwareShortcutsEnabled(): Boolean {
   return realZoomableState.hardwareShortcutsSpec.enabled

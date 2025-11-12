@@ -6,7 +6,7 @@ A _drop-in_ replacement for async `Image()` composables featuring support for pa
 
 **Features**
 
-- Automatic [Sub-sampling](sub-sampling.md) of bitmaps
+- Automatic [sub-sampling](sub-sampling.md) of bitmaps
 - Gestures:
   - Pinch-to-zoom and flings
   - Double click to zoom
@@ -16,6 +16,7 @@ A _drop-in_ replacement for async `Image()` composables featuring support for pa
 - Click listeners
 - [Keyboard and mouse shortcuts](#keyboard-shortcuts)
 - State preservation across config changes (including screen rotations)
+- HDR images
 
 ### Installation
 
@@ -204,8 +205,8 @@ For detecting double clicks, `ZoomableImage` consumes all tap gestures making it
 
 The default behavior of toggling between minimum and maximum zoom levels on double-clicks can be overridden by using the `onDoubleClick` parameter:
 
-=== "Coil" hl_lines="3"
-    ```kotlin
+=== "Coil"
+    ```kotlin hl_lines="3"
     ZoomableAsyncImage(
       model = "https://example.com/image.jpg",
       onDoubleClick = { state, centroid -> … },

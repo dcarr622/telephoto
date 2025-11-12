@@ -9,14 +9,17 @@ Designing a cohesive media experience for Android can be a lot of work. Telephot
 _Drop-in_ replacement for `Image()` composables featuring support for pan & zoom gestures and automatic sub&#8209;sampling of large images that'd otherwise not fit into memory.
 
 ### [Modifier.zoomable()](https://saket.github.io/telephoto/zoomable/)
-`ZoomableImage`'s gesture detector, packaged as a standalone `Modifier` that can be used with non-image composables.
+`ZoomableImage`'s gesture detector, packaged as a standalone `Modifier` that can be used with videos and other non-image composables.
+
+### [Zoomable Peek Overlay](https://saket.github.io/telephoto/zoomable-peek-overlay/)
+Transient, overlaid zoom effect inspired by Instagram.
 
 See [project website](https://saket.github.io/telephoto) for full documentation.
 
 ## License
 
 ```
-Copyright 2023 Saket Narayan.
+Copyright 2025 Saket Narayan.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

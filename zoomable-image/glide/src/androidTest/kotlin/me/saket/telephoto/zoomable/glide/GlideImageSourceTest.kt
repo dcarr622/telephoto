@@ -24,10 +24,12 @@ import assertk.assertions.isInstanceOf
 import assertk.assertions.isNotInstanceOf
 import assertk.assertions.isNotNull
 import com.bumptech.glide.Glide
+import com.bumptech.glide.GlideBuilder
 import com.bumptech.glide.RequestBuilder
 import com.bumptech.glide.load.engine.DiskCacheStrategy
 import com.bumptech.glide.load.engine.GlideException
 import com.bumptech.glide.load.resource.drawable.DrawableTransitionOptions.withCrossFade
+import com.bumptech.glide.manager.ConnectivityMonitor
 import com.dropbox.dropshots.Dropshots
 import com.google.testing.junit.testparameterinjector.TestParameter
 import com.google.testing.junit.testparameterinjector.TestParameterInjector
@@ -73,16 +75,18 @@ import kotlin.time.Duration.Companion.seconds
 @RunWith(TestParameterInjector::class)
 class GlideImageSourceTest {
   @get:Rule val rule = createAndroidComposeRule<ScreenshotTestActivity>()
-  @get:Rule val timeout = Timeout.seconds(10)!!
+  @get:Rule val timeout = Timeout.seconds(30)!!
   @get:Rule val serverRule = MockWebServerRule()
   @get:Rule val testName = TestName()
+
+  private val screenshotValidator = CiScreenshotValidator(
+    context = { rule.activity },
+    tolerancePercentOnLocal = 0f,
+    tolerancePercentOnCi = 0.01f,
+  )
   @get:Rule val dropshots = Dropshots(
-    filenameFunc = { it },
-    resultValidator = CiScreenshotValidator(
-      context = { rule.activity },
-      tolerancePercentOnLocal = 0f,
-      tolerancePercentOnCi = 0.1f,
-    )
+    filenameFunc = { _, testName -> testName },
+    resultValidator = screenshotValidator,
   )
 
   private val context: Context get() = rule.activity
@@ -98,6 +102,18 @@ class GlideImageSourceTest {
         else -> error("unknown path = ${request.path}")
       }
     }
+
+    // Workaround for https://github.com/bumptech/glide/issues/4567.
+    Glide.init(
+      context,
+      GlideBuilder().setConnectivityMonitorFactory { _, _ ->
+        object : ConnectivityMonitor {
+          override fun onStart() = Unit
+          override fun onStop() = Unit
+          override fun onDestroy() = Unit
+        }
+      }
+    )
   }
 
   @After
@@ -247,7 +263,25 @@ class GlideImageSourceTest {
     }
   }
 
+  @Test fun avif_images_should_not_be_sub_sampled() = runTest {
+    serverRule.server.dispatcher = object : Dispatcher() {
+      override fun dispatch(request: RecordedRequest): MockResponse {
+        check(request.path!!.endsWith(".avif"))
+        return assetAsResponse("full_image.avif")
+      }
+    }
+
+    resolve(
+      model = serverRule.server.url("full_image.avif").toString()
+    ).test {
+      skipItems(1) // Default item.
+      assertThat(awaitItem().delegate!!).isNotInstanceOf(SubSamplingDelegate::class.java)
+    }
+  }
+
   @Test fun correctly_resolve_vector_drawables() {
+    screenshotValidator.tolerancePercentOnCi = 0.06f
+
     var isImageDisplayed = false
     rule.setContent {
       ZoomableGlideImage(

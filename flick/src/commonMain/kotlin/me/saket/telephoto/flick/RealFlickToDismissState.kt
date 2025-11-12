@@ -2,9 +2,11 @@ package me.saket.telephoto.flick
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.MutatePriority
-import androidx.compose.foundation.gestures.DraggableState
+import androidx.compose.foundation.gestures.Draggable2DState
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -12,29 +14,35 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.Velocity
 import me.saket.telephoto.flick.FlickToDismissState.GestureState
 import me.saket.telephoto.flick.FlickToDismissState.GestureState.Dismissed
 import me.saket.telephoto.flick.FlickToDismissState.GestureState.Dismissing
 import me.saket.telephoto.flick.FlickToDismissState.GestureState.Dragging
 import me.saket.telephoto.flick.FlickToDismissState.GestureState.Idle
 import me.saket.telephoto.flick.FlickToDismissState.GestureState.Resetting
+import me.saket.telephoto.flick.FlickToDismissState.RubberBandingSpec
 import me.saket.telephoto.flick.internal.animateWithDuration
-import java.lang.Math.toRadians
+import me.saket.telephoto.flick.internal.toRadians
 import kotlin.math.abs
 import kotlin.math.sin
 import kotlin.math.sqrt
 
 @Stable
 internal class RealFlickToDismissState(
-  internal val dismissThresholdRatio: Float = 0.3f,
-  private val rotateOnDrag: Boolean = true,
+  rotateOnDrag: Boolean = true,
+  rubberBandingSpec: RubberBandingSpec = RubberBandingSpec.Disabled,
+  internal var dismissThresholdRatio: Float = 0.2f, // Kept in sync with rememberFlickToDismissState().
 ) : FlickToDismissState {
-  override var offset: Float by mutableStateOf(0f)
+
+  override var offset: Offset by mutableStateOf(Offset.Zero)
   override var gestureState: GestureState by mutableStateOf(Idle)
+  internal var rotateOnDrag: Boolean by mutableStateOf(rotateOnDrag)
+  internal var rubberBandingSpec: RubberBandingSpec by mutableStateOf(rubberBandingSpec)
 
   override val rotationZ: Float by derivedStateOf {
-    if (rotateOnDrag) {
-      offsetFraction * if (dragStartedOnLeftSide) -MaxRotation else MaxRotation
+    if (this.rotateOnDrag) {
+      offsetFraction * if (dragStartedOnLeftSide) -MaxRotationInDegrees else MaxRotationInDegrees
     } else {
       0f
     }
@@ -45,19 +53,19 @@ internal class RealFlickToDismissState(
     if (contentHeight == 0) {
       0f
     } else {
-      (abs(offset) / contentHeight).coerceIn(0f, 1f)
+      (abs(offset.y) / contentHeight).coerceIn(0f, 1f)
     }
   }
 
   internal var contentSize: IntSize by mutableStateOf(IntSize.Zero)
   private var dragStartedOnLeftSide: Boolean by mutableStateOf(false)
 
-  internal val draggableState = DraggableState { dy ->
-    offset += dy
+  internal val draggableState = Draggable2DState { delta ->
+    offset += delta
 
     gestureState = when (gestureState) {
       is Idle, is Dragging -> {
-        if (abs(offset) < ZoomDeltaEpsilon) {
+        if (abs(offset.y) < ZoomDeltaEpsilon) {
           Idle
         } else {
           Dragging(willDismissOnRelease = abs(offsetFraction) > dismissThresholdRatio)
@@ -82,29 +90,29 @@ internal class RealFlickToDismissState(
     }
   }
 
-  internal suspend fun animateDismissal(velocity: Float) {
-    draggableState.drag(MutatePriority.PreventUserInput) {
-      try {
+  internal suspend fun animateDismissal(velocity: Velocity) {
+    try {
+      draggableState.drag(MutatePriority.PreventUserInput) {
         val distanceCoveredByRotation = if (rotateOnDrag) {
-          val theta = toRadians(MaxRotation.toDouble()).toFloat()
+          val theta = MaxRotationInDegrees.toRadians()
           (1f - sin(theta)) * (theta * (contentSize.diagonal / 2))
         } else {
           0f
         }
         animateWithDuration(
           initialValue = offset,
-          targetValue = (contentSize.height + distanceCoveredByRotation) * if (offset > 0f) 1f else -1f,
+          targetValue = offset.copy(
+            y = (contentSize.height + distanceCoveredByRotation) * if (offset.y > 0f) 1f else -1f,
+          ),
           initialVelocity = velocity,
-          animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-          onStart = { duration ->
-            gestureState = Dismissing(duration)
-          }
-        ) { value, _ ->
+          animationSpec = AnimationSpec,
+          onStart = { duration -> gestureState = Dismissing(duration) },
+        ) { value ->
           dragBy(value - offset)
         }
-      } finally {
-        gestureState = Dismissed
       }
+    } finally {
+      gestureState = Dismissed
     }
   }
 
@@ -112,9 +120,13 @@ internal class RealFlickToDismissState(
     try {
       gestureState = Resetting
       draggableState.drag {
-        Animatable(offset).animateTo(targetValue = 0f) {
-          dragBy(value - offset)
-        }
+        Animatable(offset, Offset.VectorConverter)
+          .animateTo(
+            targetValue = Offset.Zero,
+            animationSpec = AnimationSpec,
+          ) {
+            dragBy(value - offset)
+          }
       }
     } finally {
       gestureState = Idle
@@ -126,9 +138,17 @@ internal class RealFlickToDismissState(
     /** Differences below this value are ignored when comparing two zoom values. */
     private const val ZoomDeltaEpsilon = 0.01f
 
-    private const val MaxRotation = 20f
+    private const val MaxRotationInDegrees = 20f
 
     internal const val FlingSlopMultiplier = 10f // A large enough value to exclude short flings.
+
+    private val AnimationSpec = spring(
+      // Kept in sync with ZoomableState.DefaultSettleAnimationSpec.
+      stiffness = Spring.StiffnessMedium,
+      // A non-null threshold is used to avoid long trailing animations at the end,
+      // which helps prevent unintended horizontal swipes from being intercepted.
+      visibilityThreshold = Offset.VisibilityThreshold,
+    )
   }
 }
 

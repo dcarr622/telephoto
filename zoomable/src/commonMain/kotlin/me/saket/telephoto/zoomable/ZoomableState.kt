@@ -2,11 +2,12 @@
 
 package me.saket.telephoto.zoomable
 
-import androidx.annotation.FloatRange
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.SnapSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -15,34 +16,67 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import me.saket.telephoto.ExperimentalTelephotoApi
+import me.saket.telephoto.zoomable.internal.SavedZoomableState
+import me.saket.telephoto.zoomable.spatial.CoordinateSpace
+import me.saket.telephoto.zoomable.spatial.SpatialOffset
+import kotlin.jvm.JvmName
 
 /**
  * Create a [ZoomableState] that can be used with [Modifier.zoomable].
  *
- * @param zoomSpec See [ZoomSpec.maxZoomFactor] and [ZoomSpec.preventOverOrUnderZoom].
- *
  * @param autoApplyTransformations Determines whether the resulting scale and translation of pan and zoom
  * gestures should be automatically applied by [Modifier.zoomable] to its content. This can be disabled
- * if your content prefers applying the transformations in a bespoke manner.
+ * if your content prefers applying the [transformations][ZoomableState.contentTransformation] in a
+ * bespoke manner.
  *
  * @param hardwareShortcutsSpec Spec used for handling keyboard and mouse shortcuts, or
  * [HardwareShortcutsSpec.Disabled] for disabling them.
  */
 @Composable
 fun rememberZoomableState(
-  zoomSpec: ZoomSpec = ZoomSpec(),
+  zoomSpec: ZoomSpec = ZoomSpec(maxZoomFactor = 2f),
+  autoApplyTransformations: Boolean = true,
+  hardwareShortcutsSpec: HardwareShortcutsSpec = HardwareShortcutsSpec(),
+): ZoomableState {
+  return rememberZoomableState(
+    zoomSpec = DynamicZoomSpec.recommend(zoomSpec),
+    autoApplyTransformations = autoApplyTransformations,
+    hardwareShortcutsSpec = hardwareShortcutsSpec,
+  )
+}
+
+/**
+ * Create a [ZoomableState] that can be used with [Modifier.zoomable].
+ *
+ * @param autoApplyTransformations Determines whether the resulting scale and translation of pan and zoom
+ * gestures should be automatically applied by [Modifier.zoomable] to its content. This can be disabled
+ * if your content prefers applying the [transformations][ZoomableState.contentTransformation] in a
+ * bespoke manner.
+ *
+ * @param hardwareShortcutsSpec Spec used for handling keyboard and mouse shortcuts, or
+ * [HardwareShortcutsSpec.Disabled] for disabling them.
+ */
+@Composable
+fun rememberZoomableState(
+  zoomSpec: DynamicZoomSpec,
   autoApplyTransformations: Boolean = true,
   hardwareShortcutsSpec: HardwareShortcutsSpec = HardwareShortcutsSpec(),
 ): ZoomableState {
   return rememberSaveable(saver = RealZoomableState.Saver) {
     RealZoomableState(
-      autoApplyTransformations = autoApplyTransformations,
+      savedState = SavedZoomableState(
+        autoApplyTransformations = autoApplyTransformations,
+      )
     )
   }.also {
-    it.zoomSpec = zoomSpec
+    it.dynamicZoomSpec = zoomSpec
     it.hardwareShortcutsSpec = hardwareShortcutsSpec
     it.layoutDirection = LocalLayoutDirection.current
+    it.density = LocalDensity.current
+    //it.RetainPanAcrossContentSizeChangesEffect()
   }
 }
 
@@ -63,9 +97,10 @@ sealed interface ZoomableState {
   var autoApplyTransformations: Boolean
 
   /**
-   * Single source of truth for your content's aspect ratio. If you're using `Modifier.zoomable()`
-   * with `Image()` or other composables that also accept [ContentScale], they should not be used
-   * to avoid any conflicts.
+   * Single source of truth for your content's aspect ratio. Defaults to [ContentScale.Fit].
+   *
+   * If you're using `Modifier.zoomable()` with `Image()` or other composables that also accept
+   * [ContentScale], they should not be used to avoid any conflicts.
    *
    * A visual guide of the various scale values can be found
    * [here](https://developer.android.com/jetpack/compose/graphics/images/customize#content-scale).
@@ -73,7 +108,7 @@ sealed interface ZoomableState {
   var contentScale: ContentScale
 
   /**
-   * Alignment of the content.
+   * Alignment of the content. Defaults to [Alignment.Center].
    *
    * When the content is zoomed, it is scaled with respect to this alignment until it
    * is large enough to fill all available space. After that, they're scaled uniformly.
@@ -81,21 +116,34 @@ sealed interface ZoomableState {
   var contentAlignment: Alignment
 
   /**
-   * The visual bounds of the content, calculated by applying the scale and translation of pan and zoom
-   * gestures to the value given to [ZoomableState.setContentLocation]. Useful for drawing decorations
-   * around the content or performing hit tests.
+   * Padding around the zoomable content _within_ the viewport. This will add padding for the.
+   * content after it has been clipped, which is not possible via [Modifier.padding].
    */
+  var contentPadding: PaddingValues
+
+  /**
+   * The visual bounds of the content _with_ user zoom and pan. This is calculated by applying
+   * [contentScale] and [contentAlignment] to the value passed to [ZoomableState.setContentLocation].
+   * This property is intended for drawing decorations around the content or for performing hit tests.
+   *
+   * This value will be [Rect.Zero] if the content hasn't been measured yet, and it will never
+   * exceed the viewport bounds.
+   */
+  @Deprecated(
+    message = "Superseded by coordinateSystem.contentBounds.",
+    replaceWith = ReplaceWith("coordinateSystem.contentBounds(clipToViewport = false)"),
+  )
   val transformedContentBounds: Rect
 
   /**
-   * The content's current zoom as a fraction of its min and max allowed zoom factors.
+   * The content's current zoom as a fraction of its min and max allowed zoom limits.
+   * Also see: [ZoomableContentTransformation.scale] and [ZoomableContentTransformation.scaleMetadata].
    *
    * @return A value between 0 and 1, where 0 indicates that the content is fully zoomed out,
    * 1 indicates that the content is fully zoomed in, and `null` indicates that an initial zoom
    * value hasn't been calculated yet and the content is hidden. A `null` value could be safely
    * treated the same as 0, but [Modifier.zoomable] leaves that decision up to you.
    */
-  @get:FloatRange(from = 0.0, to = 1.0)
   val zoomFraction: Float?
 
   /**
@@ -105,6 +153,34 @@ sealed interface ZoomableState {
 
   /** The zoom spec passed to [rememberZoomableState]. */
   val zoomSpec: ZoomSpec
+
+  /** Whether any zoom, pan (or both) animation is in progress. */
+  val isAnimationRunning: Boolean
+
+  /**
+   * `Modifier.zoomable()`'s coordinate system for representing spatial offsets in
+   * [CoordinateSpace.Viewport][CoordinateSpace.Companion.Viewport] and
+   * [CoordinateSpace.ZoomableContent][CoordinateSpace.Companion.ZoomableContent].
+   *
+   * Usage example:
+   *
+   * ```kotlin
+   * val state = rememberZoomableState()
+   *
+   * val viewportCenter = SpatialOffset(
+   *   offset = Offset(100f, 100f),
+   *   space = CoordinateSpace.Viewport,
+   * )
+   *
+   * // If a 200 x 200 viewport is showing a zoomed-out 500 x 500 image,
+   * // this will return (250f, 250f) in the image's coordinate space.
+   * val imageCenter: Offset = with(state.coordinateSystem) {
+   *   viewportCenter.offsetIn(CoordinateSpace.ZoomableContent)
+   * }
+   * ```
+   */
+  @ExperimentalTelephotoApi
+  val coordinateSystem: ZoomableCoordinateSystem
 
   /** See [ZoomableContentLocation]. */
   fun setContentLocation(location: ZoomableContentLocation)
@@ -121,16 +197,42 @@ sealed interface ZoomableState {
    * and suspends until it's finished.
    *
    * @param zoomFactor Ratio by which to zoom relative to the current size. For example, a [zoomFactor]
-   * of `3f` will triple the *current* zoom level.
+   * of `3.0` will triple the *current* zoom level, while `0.9` will reduce it by 10%.
    *
-   * @param centroid Focal point for this zoom within the content's size. Defaults to the center
-   * of the content.
+   * @param centroid Focal point for this zoom, in the viewport's coordinate space. Defaults to the
+   * center of the viewport. This behaves the same as using [ZoomFocalPoint.zoomAround] with the given
+   * `centroid`. To specify a point in content coordinates, use the [ZoomFocalPoint] overload instead.
    *
    * @param animationSpec The animation spec to use or [SnapSpec] for no animation.
    */
+  @OptIn(ExperimentalTelephotoApi::class)
   suspend fun zoomBy(
     zoomFactor: Float,
     centroid: Offset = Offset.Unspecified,
+    animationSpec: AnimationSpec<Float> = DefaultZoomAnimationSpec,
+  ) {
+    zoomBy(
+      zoomFactor = zoomFactor,
+      focal = ZoomFocalPoint.zoomAround(SpatialOffset(centroid, CoordinateSpace.Viewport)),
+      animationSpec = animationSpec,
+    )
+  }
+
+  /**
+   * Zooms in or out by a ratio of `zoomFactor`, using `focal` to determine how the zoom
+   * should be anchored, and suspends until the animation (if any) is finished.
+   *
+   * @param zoomFactor Ratio by which to zoom relative to the current size. For example, a `zoomFactor`
+   * of `3.0` will triple the *current* zoom level, while `0.9` will reduce it by 10%.
+   *
+   * @param focal Focal point for this zoom. See [ZoomFocalPoint] for more information.
+   *
+   * @param animationSpec The animation spec to use or [SnapSpec] for no animation.
+   */
+  @ExperimentalTelephotoApi
+  suspend fun zoomBy(
+    zoomFactor: Float,
+    focal: ZoomFocalPoint,
     animationSpec: AnimationSpec<Float> = DefaultZoomAnimationSpec,
   )
 
@@ -138,28 +240,71 @@ sealed interface ZoomableState {
    * Zooms in or out around [centroid] to achieve a final zoom level specified by [zoomFactor],
    * and suspends until it's finished.
    *
-   * @param zoomFactor Target zoom level for the content. For example, a [zoomFactor] of `2f` will
-   * set the content's zoom level to two times its *original* size. This value is internally coerced
-   * to at most [ZoomSpec.maxZoomFactor].
+   * @param zoomFactor Target zoom level for the content relative to its *original* size. For example,
+   * a `zoomFactor` of `2f` will set the content's zoom level to two times its original size. This value
+   * is internally coerced between the zoom limits described by [ZoomSpec].
    *
-   * @param centroid Focal point for this zoom within the content's size. Defaults to the center
-   * of the content.
+   * @param centroid Focal point for this zoom, in the viewport's coordinate space. Defaults to the
+   * center of the viewport. This behaves the same as using [ZoomFocalPoint.zoomAround] with the given
+   * `centroid`. To specify a point in content coordinates, use the [ZoomFocalPoint] overload instead.
    *
    * @param animationSpec The animation spec to use or [SnapSpec] for no animation.
    */
+  @OptIn(ExperimentalTelephotoApi::class)
   suspend fun zoomTo(
     zoomFactor: Float,
     centroid: Offset = Offset.Unspecified,
     animationSpec: AnimationSpec<Float> = DefaultZoomAnimationSpec,
-  )
+  ) {
+    zoomTo(
+      zoomFactor = zoomFactor,
+      focal = ZoomFocalPoint.zoomAround(SpatialOffset(centroid, CoordinateSpace.Viewport)),
+      animationSpec = animationSpec,
+    )
+  }
 
   /**
-   * Animate pan by [offset] Offset in pixels and suspend until it's finished.
+   * Zooms in or out to the specified `zoomFactor`, using `focal` to determine how the zoom
+   * should be anchored, and suspends until the animation (if any) is finished.
+   *
+   * @param zoomFactor Target zoom level for the content relative to its *original* size. For example,
+   * a `zoomFactor` of `2.0` will set the content's zoom level to two times its original size. This value
+   * is internally coerced between the zoom limits described by [ZoomSpec].
+   *
+   * @param focal Focal point for this zoom. See [ZoomFocalPoint] for more information.
    *
    * @param animationSpec The animation spec to use or [SnapSpec] for no animation.
    */
+  @ExperimentalTelephotoApi
+  suspend fun zoomTo(
+    zoomFactor: Float,
+    focal: ZoomFocalPoint,
+    animationSpec: AnimationSpec<Float> = DefaultZoomAnimationSpec,
+  )
+
+  /**
+   * Animate pan by [offset] in pixels and suspend until it's finished.
+   *
+   * @param offset Distance for this pan, in the viewport's coordinate space. To specify
+   * an offset in content coordinates, use the [SpatialOffset] overload instead.
+   *
+   * @param animationSpec The animation spec to use or [SnapSpec] for no animation.
+   */
+  @OptIn(ExperimentalTelephotoApi::class)
   suspend fun panBy(
     offset: Offset,
+    animationSpec: AnimationSpec<Offset> = DefaultPanAnimationSpec,
+  ) {
+    panBy(
+      offset = SpatialOffset(offset, CoordinateSpace.Viewport),
+      animationSpec = animationSpec,
+    )
+  }
+
+  /** See [panBy]. */
+  @ExperimentalTelephotoApi
+  suspend fun panBy(
+    offset: SpatialOffset,
     animationSpec: AnimationSpec<Offset> = DefaultPanAnimationSpec,
   )
 
@@ -175,13 +320,53 @@ sealed interface ZoomableState {
     }
   }
 
+  @Deprecated(
+    message = "Replaced by zoomBy() with the 'focal' parameter. ",
+    replaceWith = ReplaceWith(
+      "zoomBy(zoomFactor, ZoomFocalPoint.zoomAround(centroid))",
+      "me.saket.telephoto.zoomable.ZoomFocalPoint",
+    ),
+  )
+  @ExperimentalTelephotoApi
+  suspend fun zoomBy(
+    zoomFactor: Float,
+    centroid: SpatialOffset,
+    animationSpec: AnimationSpec<Float> = DefaultZoomAnimationSpec,
+  ) {
+    zoomBy(
+      zoomFactor = zoomFactor,
+      focal = ZoomFocalPoint.zoomAround(centroid),
+      animationSpec = animationSpec,
+    )
+  }
+
+  @Deprecated(
+    message = "Replaced by zoomTo() with the 'focal' parameter. ",
+    replaceWith = ReplaceWith(
+      "zoomTo(zoomFactor, ZoomFocalPoint.zoomAround(centroid))",
+      "me.saket.telephoto.zoomable.ZoomFocalPoint",
+    ),
+  )
+  @ExperimentalTelephotoApi
+  suspend fun zoomTo(
+    zoomFactor: Float,
+    centroid: SpatialOffset,
+    animationSpec: AnimationSpec<Float> = DefaultZoomAnimationSpec,
+  ) {
+    zoomTo(
+      zoomFactor = zoomFactor,
+      focal = ZoomFocalPoint.zoomAround(centroid),
+      animationSpec = animationSpec,
+    )
+  }
+
   /** See [ZoomableContentLocation]. */
   @Deprecated(
     message = "Use setContentLocation() instead",
     replaceWith = ReplaceWith("setContentLocation"),
     level = DeprecationLevel.HIDDEN,
   )
-  @Suppress("INAPPLICABLE_JVM_NAME")  // https://youtrack.jetbrains.com/issue/KT-31420
+  @Suppress("INAPPLICABLE_JVM_NAME", "unused")  // https://youtrack.jetbrains.com/issue/KT-31420
   @JvmName("setContentLocation")
   suspend fun setContentLocationSuspending(location: ZoomableContentLocation) {
     setContentLocation(location)
@@ -190,6 +375,7 @@ sealed interface ZoomableState {
   companion object {
     val DefaultZoomAnimationSpec: AnimationSpec<Float> get() = spring(stiffness = Spring.StiffnessMediumLow)
     val DefaultPanAnimationSpec: AnimationSpec<Offset> get() = spring(stiffness = Spring.StiffnessMediumLow)
+    val DefaultSettleAnimationSpec: AnimationSpec<Float> get() = spring()
   }
 }
 

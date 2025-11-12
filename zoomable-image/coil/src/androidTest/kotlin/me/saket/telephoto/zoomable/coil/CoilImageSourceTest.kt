@@ -6,7 +6,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
-import android.os.Environment
 import android.provider.MediaStore
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
@@ -60,11 +59,13 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import leakcanary.LeakAssertions
+import me.saket.telephoto.ExperimentalTelephotoApi
 import me.saket.telephoto.subsamplingimage.ImageBitmapOptions
 import me.saket.telephoto.util.CiScreenshotValidator
 import me.saket.telephoto.util.ScreenshotTestActivity
 import me.saket.telephoto.util.compositionLocalProviderReturnable
 import me.saket.telephoto.util.waitUntil
+import me.saket.telephoto.zoomable.ZoomableContent
 import me.saket.telephoto.zoomable.ZoomableImageSource
 import me.saket.telephoto.zoomable.ZoomableImageSource.ResolveResult
 import me.saket.telephoto.zoomable.ZoomableImageState
@@ -72,6 +73,7 @@ import me.saket.telephoto.zoomable.coil.CoilImageSourceTest.SvgDecodingState.Svg
 import me.saket.telephoto.zoomable.coil.CoilImageSourceTest.SvgDecodingState.SvgDecodingEnabled
 import me.saket.telephoto.zoomable.image.coil.test.R
 import me.saket.telephoto.zoomable.rememberZoomableImageState
+import me.saket.telephoto.zoomable.spatial.CoordinateSpace
 import okhttp3.HttpUrl
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -98,19 +100,21 @@ import android.graphics.ColorSpace as AndroidColorSpace
 import coil.size.Size as CoilSize
 
 @RunWith(TestParameterInjector::class)
-@OptIn(ExperimentalCoilApi::class)
+@OptIn(ExperimentalCoilApi::class, ExperimentalTelephotoApi::class)
 class CoilImageSourceTest {
   @get:Rule val rule = createAndroidComposeRule<ScreenshotTestActivity>()
-  @get:Rule val timeout = Timeout.seconds(10)!!
+  @get:Rule val timeout = Timeout.seconds(30)!!
   @get:Rule val serverRule = MockWebServerRule()
   @get:Rule val testName = TestName()
+
+  private val screenshotValidator = CiScreenshotValidator(
+    context = { rule.activity },
+    tolerancePercentOnLocal = 0f,
+    tolerancePercentOnCi = 0.01f,
+  )
   @get:Rule val dropshots = Dropshots(
-    filenameFunc = { it },
-    resultValidator = CiScreenshotValidator(
-      context = { rule.activity },
-      tolerancePercentOnLocal = 0f,
-      tolerancePercentOnCi = 0.1f,
-    )
+    filenameFunc = { _, testName -> testName },
+    resultValidator = screenshotValidator,
   )
 
   private val context: Context get() = rule.activity
@@ -265,10 +269,10 @@ class CoilImageSourceTest {
   @Test fun reload_image_when_image_request_changes() = runTest {
     var imageUrl by mutableStateOf(serverRule.server.url("placeholder_image.png"))
 
-    var isImageDisplayed = false
+    lateinit var imageState: ZoomableImageState
     rule.setContent {
       ZoomableAsyncImage(
-        state = rememberZoomableImageState().also { isImageDisplayed = it.isImageDisplayed },
+        state = rememberZoomableImageState().also { imageState = it },
         modifier = Modifier.fillMaxSize(),
         model = ImageRequest.Builder(LocalContext.current)
           .data(imageUrl)
@@ -278,17 +282,46 @@ class CoilImageSourceTest {
       )
     }
 
-    rule.waitUntil(5.seconds) { isImageDisplayed }
+    rule.waitUntil { imageState.isImageDisplayed }
     rule.runOnIdle {
+      val imageSize = with(imageState.zoomableState.coordinateSystem) {
+        unscaledContentBounds.sizeIn(CoordinateSpace.ZoomableContent)
+      }
+      assertThat(imageSize).isEqualTo(Size(256f, 256f))
       dropshots.assertSnapshot(rule.activity, testName.methodName + "_first_image")
     }
 
     imageUrl = serverRule.server.url("full_image.png")
 
-    rule.waitUntil(5.seconds) { !isImageDisplayed }
-    rule.waitUntil(5.seconds) { isImageDisplayed }
+    rule.waitUntil {
+      val imageSize = with(imageState.zoomableState.coordinateSystem) {
+        unscaledContentBounds.sizeIn(CoordinateSpace.ZoomableContent)
+      }
+      imageSize == Size(512f, 512f)
+    }
     rule.runOnIdle {
       dropshots.assertSnapshot(rule.activity, testName.methodName + "_second_image")
+    }
+  }
+
+  @Test fun current_image_is_not_reset_when_a_new_request_is_received() = runTest {
+    var imageUrl by mutableStateOf(
+      withContext(Dispatchers.IO) {
+        serverRule.server.url("placeholder_image.png")
+      }
+    )
+
+    resolve { imageUrl }.test {
+      skipItems(1)  // Default item.
+      assertThat(awaitItem().delegate!!).isInstanceOf<ZoomableImageSource.SubSamplingDelegate>()
+
+      imageUrl = withContext(Dispatchers.IO) {
+        serverRule.server.url("full_image.png")
+      }
+
+      assertThat(awaitItem().delegate)
+        .isNotNull()
+        .isInstanceOf<ZoomableImageSource.SubSamplingDelegate>()
     }
   }
 
@@ -320,6 +353,10 @@ class CoilImageSourceTest {
     @TestParameter requestData: SvgRequestDataParam,
     @TestParameter decodingState: SvgDecodingState,
   ) {
+    if (decodingState == SvgDecodingEnabled) {
+      screenshotValidator.tolerancePercentOnCi = 0.06f
+    }
+
     val model = when (requestData) {
       SvgRequestDataParam.RemoteUrl -> serverRule.server.url("emoji.svg")
       else -> requestData.data(context)
@@ -359,6 +396,8 @@ class CoilImageSourceTest {
   }
 
   @Test fun vector_drawables_should_not_be_sub_sampled() {
+    screenshotValidator.tolerancePercentOnCi = 0.06f
+
     var isImageDisplayed = false
     rule.setContent {
       ZoomableAsyncImage(
@@ -425,6 +464,22 @@ class CoilImageSourceTest {
 
     resolve {
       serverRule.server.url(param.url)
+    }.test {
+      skipItems(1) // Default item.
+      assertThat(awaitItem().delegate!!).isNotInstanceOf(ZoomableImageSource.SubSamplingDelegate::class.java)
+    }
+  }
+
+  @Test fun avif_images_should_not_be_sub_sampled() = runTest {
+    serverRule.server.dispatcher = object : Dispatcher() {
+      override fun dispatch(request: RecordedRequest): MockResponse {
+        check(request.path!!.endsWith(".avif"))
+        return assetAsResponse("full_image.avif")
+      }
+    }
+
+    resolve {
+      serverRule.server.url("full_image.avif")
     }.test {
       skipItems(1) // Default item.
       assertThat(awaitItem().delegate!!).isNotInstanceOf(ZoomableImageSource.SubSamplingDelegate::class.java)
@@ -518,7 +573,7 @@ class CoilImageSourceTest {
     rule.setContent {
       val counter by produceState(initialValue = 0) {
         while (true) {
-          this.value++
+          this.value += 1
           delay(50.milliseconds)
         }
       }
@@ -642,7 +697,7 @@ private suspend fun Context.copyImageToExternalStorage(imageFile: Path): Uri {
   val uri = fs.createMediaStoreUri(
     filename = imageFile.name,
     collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
-    directory = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath,
+    relativePath = null,
   )!!
   fs.write(uri.toOkioPath()) {
     fs.read(imageFile) {

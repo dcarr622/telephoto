@@ -1,5 +1,3 @@
-@file:Suppress("UnstableApiUsage")
-
 pluginManagement {
   includeBuild("gradle/build-logic")
   repositories {
@@ -9,6 +7,7 @@ pluginManagement {
   }
 }
 
+@Suppress("UnstableApiUsage")
 dependencyResolutionManagement {
   repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
   repositories {
@@ -23,6 +22,7 @@ dependencyResolutionManagement {
 rootProject.name="telephoto"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
+include(":annotations")
 //include(":benchmark:runner")
 include(":flick")
 include(":zoomable")
@@ -31,6 +31,6 @@ include(":zoomable-image:coil")
 include(":zoomable-image:coil3")
 include(":zoomable-image:glide")
 include(":zoomable-image:sub-sampling-image")
+include(":zoomable-peek-overlay")
 include(":sample")
 include(":test-util")
-

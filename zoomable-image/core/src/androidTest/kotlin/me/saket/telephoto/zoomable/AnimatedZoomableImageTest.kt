@@ -34,11 +34,11 @@ class AnimatedZoomableImageTest {
   )
 
   @get:Rule val dropshots = Dropshots(
-    filenameFunc = { it },
+    filenameFunc = { _, testName -> testName },
     resultValidator = CiScreenshotValidator(
       context = { rule.activity },
       tolerancePercentOnLocal = 0f,
-      tolerancePercentOnCi = 0.01f,
+      tolerancePercentOnCi = 0f,
     )
   )
 

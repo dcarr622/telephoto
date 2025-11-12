@@ -1,11 +1,12 @@
 package me.saket.telephoto.flick
 
-import androidx.annotation.FloatRange
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.geometry.Offset
 import dev.drewhamilton.poko.Poko
+import me.saket.telephoto.flick.FlickToDismissState.RubberBandingSpec
 import kotlin.time.Duration
 
 /**
@@ -21,18 +22,24 @@ import kotlin.time.Duration
 fun rememberFlickToDismissState(
   dismissThresholdRatio: Float = 0.2f,
   rotateOnDrag: Boolean = true,
+  rubberBandingSpec: RubberBandingSpec = RubberBandingSpec(resistanceFactor = 2f),
 ): FlickToDismissState {
-  return remember(dismissThresholdRatio, rotateOnDrag) {
-    RealFlickToDismissState(
-      dismissThresholdRatio = dismissThresholdRatio,
-      rotateOnDrag = rotateOnDrag
-    )
+  check(dismissThresholdRatio > 0f) {
+    "The dismiss threshold ratio must be a non-zero value."
+  }
+
+  return remember {
+    RealFlickToDismissState()
+  }.also {
+    it.rotateOnDrag = rotateOnDrag
+    it.dismissThresholdRatio = dismissThresholdRatio
+    it.rubberBandingSpec = rubberBandingSpec
   }
 }
 
 @Stable
 sealed interface FlickToDismissState {
-  val offset: Float
+  val offset: Offset
   val rotationZ: Float
   val gestureState: GestureState
 
@@ -40,9 +47,8 @@ sealed interface FlickToDismissState {
    * Distance dragged as a fraction of the content's height.
    *
    * @return A value between 0 and 1, where 0 indicates that the content is fully settled in its
-   * default position and 1 indicates that the content is past its dismiss threshold
+   * default position and 1 indicates that the content is past its layout height.
    */
-  @get:FloatRange(from = 0.0, to = 1.0)
   val offsetFraction: Float
 
   @Immutable
@@ -101,4 +107,40 @@ sealed interface FlickToDismissState {
      */
     data object Dismissed : GestureState
   }
+
+  /**
+   * Applies a rubber banding effect to the content while it is being dragged,
+   * up until the dismiss threshold is reached.
+   *
+   * @param resistanceFactor Controls the strength of the rubber banding effect.
+   * A value of `1f` disables the effect entirely (no resistance). Higher values
+   * increase resistance by proportionally reducing the visible drag distance.
+   * */
+  @Poko
+  class RubberBandingSpec(internal val resistanceFactor: Float = 2f) {
+    companion object {
+      val Disabled: RubberBandingSpec = RubberBandingSpec(1f)
+    }
+
+    init {
+      require(resistanceFactor > 0f) {
+        "resistanceFactor must be greater than 0 to avoid division by zero. " +
+          "To disable rubber banding, use 1f or RubberBandingSpec.Disabled."
+      }
+    }
+  }
+}
+
+@Composable
+@Suppress("unused")
+@Deprecated("Kept for binary compatibility", level = DeprecationLevel.HIDDEN)
+fun rememberFlickToDismissState(
+  dismissThresholdRatio: Float = 0.2f,
+  rotateOnDrag: Boolean = true,
+): FlickToDismissState {
+  return rememberFlickToDismissState(
+    dismissThresholdRatio = dismissThresholdRatio,
+    rotateOnDrag = rotateOnDrag,
+    rubberBandingSpec = RubberBandingSpec.Disabled,
+  )
 }

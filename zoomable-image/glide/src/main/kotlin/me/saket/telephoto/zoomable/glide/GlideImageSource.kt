@@ -2,6 +2,7 @@
 
 package me.saket.telephoto.zoomable.glide
 
+import android.content.Context
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import androidx.compose.runtime.Composable
@@ -13,6 +14,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.platform.LocalContext
 import com.bumptech.glide.RequestBuilder
 import com.bumptech.glide.RequestManager
 import com.bumptech.glide.load.DataSource
@@ -26,6 +28,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import me.saket.telephoto.subsamplingimage.ImageBitmapOptions
 import me.saket.telephoto.subsamplingimage.SubSamplingImageSource
+import me.saket.telephoto.subsamplingimage.util.canBeSubSampled
 import me.saket.telephoto.zoomable.ZoomableImageSource
 import me.saket.telephoto.zoomable.ZoomableImageSource.ResolveResult
 import me.saket.telephoto.zoomable.copy
@@ -46,12 +49,14 @@ internal data class GlideImageSource(
 
   @Composable
   override fun resolve(canvasSize: Flow<Size>): ResolveResult {
-    val resolver = remember(this) {
+    val context = LocalContext.current
+    val resolver = remember(this, context) {
       GlideImageResolver(
         request = request,
         requestManager = requestManager,
         size = { canvasSize.first().toGlideSize() },
         isVectorDrawable = isVectorDrawable,
+        context = context,
       )
     }
     return resolver.resolved
@@ -68,6 +73,7 @@ private class GlideImageResolver(
   private val requestManager: RequestManager,
   private val size: suspend () -> GlideSize,
   private val isVectorDrawable: Boolean,
+  private val context: Context,
 ) : RememberWorker() {
 
   var resolved: ResolveResult by mutableStateOf(
@@ -113,7 +119,7 @@ private class GlideImageResolver(
               }
               resolved.copy(
                 crossfadeDuration = instant.transition.crossfadeDuration(),
-                delegate = if (subSamplingSource != null) {
+                delegate = if (subSamplingSource != null && subSamplingSource.canBeSubSampled(context)) {
                   ZoomableImageSource.SubSamplingDelegate(
                     source = subSamplingSource,
                     imageOptions = ImageBitmapOptions(from = instant.resource.bitmap)

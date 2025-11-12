@@ -13,6 +13,7 @@ bin/
 gen/
 out/
 build/
+.kotlin/
 
 # Gradle files
 .gradle/
@@ -25,6 +26,7 @@ local.properties
 
 # Android Studio stuff
 .idea/
+!.idea/runConfigurations
 .navigation/
 captures/
 *.iml

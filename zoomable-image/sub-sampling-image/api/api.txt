@@ -35,11 +35,10 @@ package me.saket.telephoto.subsamplingimage {
     method @androidx.compose.runtime.Composable public static void SubSamplingImage(me.saket.telephoto.subsamplingimage.SubSamplingImageState state, String? contentDescription, optional androidx.compose.ui.Modifier modifier, optional float alpha, optional androidx.compose.ui.graphics.ColorFilter? colorFilter);
   }
 
-  public sealed interface SubSamplingImageSource extends java.io.Closeable {
+  public interface SubSamplingImageSource extends java.io.Closeable {
     method public default void close();
-    method public suspend Object? decoder(android.content.Context context, kotlin.coroutines.Continuation<? super android.graphics.BitmapRegionDecoder>);
+    method public suspend Object? decoder(kotlin.coroutines.Continuation<? super me.saket.telephoto.subsamplingimage.internal.ImageRegionDecoder.Factory>);
     method public androidx.compose.ui.graphics.ImageBitmap? getPreview();
-    method public okio.BufferedSource peek(android.content.Context context);
     property public abstract androidx.compose.ui.graphics.ImageBitmap? preview;
     field public static final me.saket.telephoto.subsamplingimage.SubSamplingImageSource.Companion Companion;
   }
@@ -68,6 +67,48 @@ package me.saket.telephoto.subsamplingimage {
 
   public final class SubSamplingImageStateKt {
     method @androidx.compose.runtime.Composable public static me.saket.telephoto.subsamplingimage.SubSamplingImageState rememberSubSamplingImageState(me.saket.telephoto.subsamplingimage.SubSamplingImageSource imageSource, me.saket.telephoto.zoomable.ZoomableState zoomableState, optional me.saket.telephoto.subsamplingimage.ImageBitmapOptions imageOptions, optional me.saket.telephoto.subsamplingimage.SubSamplingImageErrorReporter errorReporter);
+  }
+
+}
+
+package me.saket.telephoto.subsamplingimage.internal {
+
+  public final class ImageChecksKt {
+    method @Deprecated public static suspend Object? canBeSubSampled(me.saket.telephoto.subsamplingimage.SubSamplingImageSource, android.content.Context context, kotlin.coroutines.Continuation<? super java.lang.Boolean>);
+    method @Deprecated public static suspend Object? exists(me.saket.telephoto.subsamplingimage.SubSamplingImageSource, android.content.Context context, kotlin.coroutines.Continuation<? super java.lang.Boolean>);
+  }
+
+  public interface ImageRegionDecoder {
+    method public default void close();
+    method public suspend Object? decodeRegion(androidx.compose.ui.unit.IntRect region, int sampleSize, kotlin.coroutines.Continuation<? super me.saket.telephoto.subsamplingimage.internal.ImageRegionDecoder.DecodeResult>);
+    method public long getImageSize();
+    property public abstract long imageSize;
+  }
+
+  @dev.drewhamilton.poko.Poko public static final class ImageRegionDecoder.DecodeResult {
+    ctor public ImageRegionDecoder.DecodeResult(androidx.compose.ui.graphics.painter.Painter painter, boolean hasUltraHdrContent);
+    method public boolean getHasUltraHdrContent();
+    method public androidx.compose.ui.graphics.painter.Painter getPainter();
+    property public final boolean hasUltraHdrContent;
+    property public final androidx.compose.ui.graphics.painter.Painter painter;
+  }
+
+  public static fun interface ImageRegionDecoder.Factory {
+    method public suspend Object? create(me.saket.telephoto.subsamplingimage.internal.ImageRegionDecoder.FactoryParams params, kotlin.coroutines.Continuation<? super me.saket.telephoto.subsamplingimage.internal.ImageRegionDecoder>);
+  }
+
+  public static interface ImageRegionDecoder.FactoryParams {
+    method public me.saket.telephoto.subsamplingimage.ImageBitmapOptions getImageOptions();
+    property public abstract me.saket.telephoto.subsamplingimage.ImageBitmapOptions imageOptions;
+  }
+
+}
+
+package me.saket.telephoto.subsamplingimage.util {
+
+  public final class ImageChecksKt {
+    method public static suspend Object? canBeSubSampled(me.saket.telephoto.subsamplingimage.SubSamplingImageSource, android.content.Context context, kotlin.coroutines.Continuation<? super java.lang.Boolean>);
+    method public static suspend Object? exists(me.saket.telephoto.subsamplingimage.SubSamplingImageSource, android.content.Context context, kotlin.coroutines.Continuation<? super java.lang.Boolean>);
   }
 
 }

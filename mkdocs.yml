@@ -49,6 +49,8 @@ markdown_extensions:
       alternate_style: true
   - pymdownx.caret # Underlines.
   - admonition  # Warning call-outs.
+  - mdx_truly_sane_lists: # Nested list items
+      nested_indent: 2
 
 plugins:
   - search
@@ -65,7 +67,7 @@ plugins:
 
 extra:
   versions:
-    telephoto: '0.14.0' # Env var for the latest version on maven.
+    telephoto: '0.18.0' # Env var for the latest version on maven.
 
 nav:
   - 'Overview': index.md
@@ -77,3 +79,4 @@ nav:
   - 'Modifier.zoomable()':
       - 'Overview': zoomable/index.md
       - 'Recipes': zoomable/recipes.md
+  - 'Zoomable Peek Overlay': zoomable-peek-overlay/index.md

@@ -3,8 +3,10 @@ package me.saket.telephoto.zoomable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.ui.geometry.Offset
-import dev.drewhamilton.poko.Poko
+import me.saket.telephoto.ExperimentalTelephotoApi
 import me.saket.telephoto.zoomable.internal.maxScale
+import me.saket.telephoto.zoomable.spatial.CoordinateSpace
+import me.saket.telephoto.zoomable.spatial.SpatialOffset
 
 /**
  * Implement this interface for reacting to double clicks on `Modifier.zoomable`'s content.
@@ -15,7 +17,7 @@ fun interface DoubleClickToZoomListener {
   companion object {
     /**
      * Cycles between [maxZoomFactor] and the minimum zoom factor on double clicks.
-     * When [maxZoomFactor] is null, [ZoomSpec.maxZoomFactor] is used.
+     * When [maxZoomFactor] is null, [ZoomSpec.maximum] is used.
      */
     @Stable
     fun cycle(
@@ -28,24 +30,29 @@ fun interface DoubleClickToZoomListener {
     centroid: Offset,
   )
 
+  @ExperimentalTelephotoApi
+  suspend fun ZoomableCoordinateSystem.onDoubleClick(
+    state: ZoomableState,
+    centroid: SpatialOffset,
+  ) {
+    onDoubleClick(
+      state = state,
+      centroid = with(state.coordinateSystem) {
+        centroid.offsetIn(CoordinateSpace.Viewport)
+      }
+    )
+  }
+
   /**
-   * Toggles between [ZoomSpec.maxZoomFactor] and the minimum zoom factor on double clicks.
+   * Toggles between [ZoomSpec.maximum] and the [ZoomSpec.minimum] on double clicks.
    */
   @Deprecated(
-    message = "Use DoubleClickToZoomListener.Cycle() instead",
+    message = "Use DoubleClickToZoomListener.cycle() instead",
     replaceWith = ReplaceWith("DoubleClickToZoomListener.cycle()"),
   )
   data object ToggleBetweenMinAndMax : DoubleClickToZoomListener {
     override suspend fun onDoubleClick(state: ZoomableState, centroid: Offset) {
-      val zoomFraction = state.zoomFraction ?: return // Content isn't ready yet.
-      state.zoomTo(
-        zoomFactor = if (zoomFraction < 0.95f) {
-          state.zoomSpec.maxZoomFactor
-        } else {
-          state.contentTransformation.scaleMetadata.initialScale.maxScale
-        },
-        centroid = centroid,
-      )
+      cycle().onDoubleClick(state, centroid)
     }
   }
 }
@@ -53,21 +60,40 @@ fun interface DoubleClickToZoomListener {
 /**
  * See [DoubleClickToZoomListener.cycle].
  */
-@Poko
-@Immutable
-private class CycleZoomOnDoubleClick(private val maxZoomFactor: Float? = null) : DoubleClickToZoomListener {
-  override suspend fun onDoubleClick(state: ZoomableState, centroid: Offset) {
-    val transformation = state.contentTransformation.takeIf { it.isSpecified } ?: return // Content isn't ready yet
-    val maxZoomFactor = this.maxZoomFactor ?: state.zoomSpec.maxZoomFactor
-    val isAtMaxZoom = maxZoomFactor - transformation.scale.scaleX < 0.05f
+@OptIn(ExperimentalTelephotoApi::class)
+private data class CycleZoomOnDoubleClick(
+  private val maxZoomFactor: Float? = null
+) : DoubleClickToZoomListener {
+
+  override suspend fun ZoomableCoordinateSystem.onDoubleClick(state: ZoomableState, centroid: SpatialOffset) {
+    val transformation = state.contentTransformation.takeIf { it.isSpecified }
+    val zoomFraction = state.zoomFraction
+
+    if (transformation == null || zoomFraction == null) {
+      // Content isn't ready yet. Technically, this should never happen because Modifier.zoomable()
+      // doesn't register a double click listener until after it has measured the content.
+      return
+    }
+
+    val isAtMaxZoom = if (maxZoomFactor == null) {
+      zoomFraction >= 0.95f
+    } else {
+      maxZoomFactor - transformation.scale.maxScale < 0.05f
+    }
 
     if (isAtMaxZoom) {
       state.resetZoom()
     } else {
       state.zoomTo(
-        zoomFactor = maxZoomFactor,
-        centroid = centroid,
+        zoomFactor = maxZoomFactor ?: state.zoomSpec.maximum.factor,
+        focal = ZoomFocalPoint.zoomAround(centroid),
       )
+    }
+  }
+
+  override suspend fun onDoubleClick(state: ZoomableState, centroid: Offset) {
+    with(state.coordinateSystem) {
+      onDoubleClick(state, SpatialOffset(centroid, CoordinateSpace.Viewport))
     }
   }
 }
